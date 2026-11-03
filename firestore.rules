@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isCoach() { return signedIn() && request.auth.token.email == "choicoach@ptnote.app"; }
+    function userDoc() { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function isMember() { return signedIn() && exists(userDoc()); }
+    function owns(mid) { return isMember() && get(userDoc()).data.memberId == mid; }
+    function onlyKeys(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+    function sameMember() { return request.resource.data.memberId == resource.data.memberId; }
+
+    match /users/{uid} {
+      allow read: if isCoach() || (signedIn() && request.auth.uid == uid);
+      allow write: if isCoach();
+    }
+    match /coachNotes/{mid} {
+      allow read, write: if isCoach();
+    }
+    match /members/{mid} {
+      allow read: if isCoach() || owns(mid) || (isMember() && resource.data.shared == true);
+      allow create, delete: if isCoach();
+      allow update: if isCoach() || (owns(mid) && onlyKeys(['shared', 'bodySummary', 'updatedAt']));
+    }
+    match /sessions/{id} {
+      allow read: if isCoach() || owns(resource.data.memberId);
+      allow create, delete: if isCoach();
+      allow update: if isCoach() || (owns(resource.data.memberId) && onlyKeys(['memberFb', 'fbSeen', 'updatedAt']));
+    }
+    match /meals/{id} {
+      allow read: if isCoach() || owns(resource.data.memberId);
+      allow create: if isCoach() || owns(request.resource.data.memberId);
+      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember() && onlyKeys(['date', 'type', 'memo', 'photo', 'seen', 'updatedAt']));
+      allow delete: if isCoach() || owns(resource.data.memberId);
+    }
+    match /body/{id} {
+      allow read, delete: if isCoach() || owns(resource.data.memberId);
+      allow create: if isCoach() || owns(request.resource.data.memberId);
+      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember());
+    }
+    match /workouts/{id} {
+      allow read: if isCoach() || owns(resource.data.memberId);
+      allow create: if isCoach() || owns(request.resource.data.memberId);
+      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember() && onlyKeys(['date', 'minutes', 'exercises', 'note', 'updatedAt']));
+      allow delete: if isCoach() || owns(resource.data.memberId);
+    }
+  }
+}

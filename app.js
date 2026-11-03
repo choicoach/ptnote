@@ -1,0 +1,585 @@
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { firebaseConfig, COACH_ID, ID_DOMAIN } from "./config.js";
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+let fs;
+try { fs = initializeFirestore(app, { localCache: persistentLocalCache() }); } catch (e) { fs = initializeFirestore(app, {}); }
+
+const COLS = ["sessions", "meals", "body", "workouts"];
+const S = { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [] };
+let me = null; // {role:'coach'} | {role:'member', memberId}
+let unsubs = [];
+let ui = { coachMember: null, tab: "sessions", mtab: "home" };
+try { const s = JSON.parse(localStorage.getItem("ptnote-ui") || "null"); if (s) ui = Object.assign(ui, s); } catch (e) {}
+const saveUi = () => { try { localStorage.setItem("ptnote-ui", JSON.stringify(ui)); } catch (e) {} };
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const today = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
+const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const daysSince = d => d ? Math.floor((new Date(today()) - new Date(d)) / 864e5) : null;
+const fmtD = d => { if (!d) return ""; const [, m, dd] = d.split("-"); const w = "일월화수목금토"[new Date(d).getDay()]; return `${+m}/${+dd} (${w})`; };
+const by = (arr, k, dir = -1) => [...arr].sort((a, b) => (a[k] > b[k] ? 1 : a[k] < b[k] ? -1 : 0) * dir);
+const of = (col, mid) => S[col].filter(x => x.memberId === mid);
+const idToEmail = id => `${id.trim().toLowerCase()}@${ID_DOMAIN}`;
+const isCoach = () => me && me.role === "coach";
+function toast(t) { const el = document.createElement("div"); el.className = "toast"; el.textContent = t; document.body.appendChild(el); setTimeout(() => el.remove(), 2000); }
+
+function errMsg(e) {
+  const c = e && e.code || "";
+  if (c.includes("permission")) return "권한이 없어 저장하지 못했어요.";
+  if (c.includes("resource-exhausted")) return "무료 사용량을 넘었어요. 코치님께 알려 주세요.";
+  if (c.includes("invalid-argument")) return "사진이 너무 커요. 다른 사진으로 시도해 주세요.";
+  return "저장하지 못했어요. 인터넷 연결을 확인해 주세요.";
+}
+async function create(col, id, data) {
+  data.updatedAt = new Date().toISOString();
+  try { await setDoc(doc(fs, col, id), data); return true; } catch (e) { console.error(e); toast(errMsg(e)); return false; }
+}
+async function patch(col, id, data) {
+  data.updatedAt = new Date().toISOString();
+  try { await updateDoc(doc(fs, col, id), data); return true; } catch (e) { console.error(e); toast(errMsg(e)); return false; }
+}
+async function del(col, id) {
+  try { await deleteDoc(doc(fs, col, id)); return true; } catch (e) { console.error(e); toast(errMsg(e)); return false; }
+}
+
+/* ---------- auth ---------- */
+function loginView(msg) {
+  $("#bnav").hidden = true; $("#hdrRight").innerHTML = "";
+  $("#app").innerHTML = `<div class="login">
+    <div class="login-mark"><img src="icon-192.png" alt="" width="72" height="72"></div>
+    <h1>PT노트</h1>
+    <p class="muted">코치님께 받은 아이디와 비밀번호로 로그인하세요.</p>
+    <form id="loginForm" class="stack">
+      <label class="f" for="lg-id">아이디<input id="lg-id" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+      <label class="f" for="lg-pw">비밀번호<input id="lg-pw" type="password" autocomplete="current-password" required minlength="6"></label>
+      <button class="pri" type="submit">로그인</button>
+      <div id="lg-msg" class="muted" style="font-size:13px">${esc(msg || "")}</div>
+    </form>
+    <details class="install"><summary>홈 화면에 앱 아이콘 만들기</summary>
+      <p><b>아이폰</b>: 사파리에서 열고 아래 공유 버튼 → "홈 화면에 추가"</p>
+      <p><b>갤럭시</b>: 크롬 메뉴(⋮) → "홈 화면에 추가" 또는 "앱 설치"</p>
+    </details>
+  </div>`;
+  $("#loginForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const id = $("#lg-id").value.trim().toLowerCase(), pw = $("#lg-pw").value;
+    const m = $("#lg-msg"); m.textContent = "로그인 중…";
+    try { await signInWithEmailAndPassword(auth, idToEmail(id), pw); }
+    catch (err) {
+      const c = err.code || "";
+      if (id === COACH_ID && (c.includes("invalid-credential") || c.includes("user-not-found"))) {
+        m.innerHTML = `코치 계정이 아직 없다면 지금 이 비밀번호로 만들 수 있어요. <button type="button" class="sm" id="mkCoach">코치 계정 만들기</button>`;
+        $("#mkCoach").onclick = async () => {
+          try { await createUserWithEmailAndPassword(auth, idToEmail(id), pw); }
+          catch (e2) { m.textContent = (e2.code || "").includes("email-already") ? "비밀번호가 틀렸어요." : (e2.code || "").includes("weak-password") ? "비밀번호는 6자 이상이어야 해요." : "계정을 만들지 못했어요."; }
+        };
+      } else if (c.includes("too-many")) m.textContent = "시도가 너무 많아요. 잠시 후 다시 해 주세요.";
+      else if (c.includes("network")) m.textContent = "인터넷 연결을 확인해 주세요.";
+      else m.textContent = "아이디 또는 비밀번호가 맞지 않아요.";
+    }
+  });
+}
+
+function stopListening() { unsubs.forEach(u => { try { u(); } catch (e) {} }); unsubs = []; }
+function listen(q, cb) { unsubs.push(onSnapshot(q, cb, err => { console.error(err); toast("기록을 불러오지 못했어요."); })); }
+const rows = snap => snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+
+onAuthStateChanged(auth, async user => {
+  stopListening();
+  Object.assign(S, { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [] });
+  me = null;
+  if (!user) return loginView();
+  $("#app").innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`;
+  if (user.email === idToEmail(COACH_ID)) {
+    me = { role: "coach" };
+    listen(collection(fs, "members"), s => { S.members = rows(s); render(); });
+    COLS.forEach(c => listen(collection(fs, c), s => { S[c] = rows(s); render(); }));
+    listen(collection(fs, "coachNotes"), s => { S.notes = {}; s.docs.forEach(d => S.notes[d.id] = d.data()); });
+    render();
+    return;
+  }
+  let u;
+  try { u = await getDoc(doc(fs, "users", user.uid)); } catch (e) { u = null; }
+  if (!u || !u.exists()) { await signOut(auth); return loginView("등록되지 않은 계정이에요. 코치님께 문의해 주세요."); }
+  const mid = u.data().memberId;
+  me = { role: "member", memberId: mid };
+  listen(doc(fs, "members", mid), d => { S.members = d.exists() ? [Object.assign({ id: d.id }, d.data())] : []; render(); });
+  listen(query(collection(fs, "members"), where("shared", "==", true)), s => { S.peers = rows(s).filter(x => x.id !== mid); render(); });
+  COLS.forEach(c => listen(query(collection(fs, c), where("memberId", "==", mid)), s => { S[c] = rows(s); render(); }));
+  render();
+});
+
+/* ---------- header ---------- */
+function renderHeader() {
+  const r = $("#hdrRight");
+  if (!me) { r.innerHTML = ""; return; }
+  r.innerHTML = `<button class="ghost sm" data-act="settings">${isCoach() ? "최 코치" : esc((S.members[0] || {}).name || "내 정보")} ⚙</button>`;
+}
+
+/* ---------- status helpers ---------- */
+function memberStatus(m) {
+  const meals = of("meals", m.id), sess = of("sessions", m.id), body = by(of("body", m.id), "date", 1);
+  const lastMeal = by(meals, "date")[0]?.date, lastSess = by(sess, "date")[0]?.date;
+  const unreadFb = sess.filter(s => s.memberFb && !s.fbSeen).length;
+  const uncommented = meals.filter(x => !x.coachComment && !x.seen).length;
+  const mealGap = daysSince(lastMeal);
+  let wDelta = null;
+  if (body.length >= 2 && body[0].weight && body[body.length - 1].weight) wDelta = body[body.length - 1].weight - body[0].weight;
+  return { lastMeal, lastSess, unreadFb, uncommented, mealGap, wDelta, lastW: body.length ? body[body.length - 1].weight : null };
+}
+function bodySummaryFor(mid) {
+  const r = by(of("body", mid), "date", 1).filter(x => x.weight != null || x.smm != null);
+  if (!r.length) return null;
+  const f = r[0], l = r[r.length - 1];
+  return { fw: f.weight ?? null, lw: l.weight ?? null, fs: f.smm ?? null, ls: l.smm ?? null, n: r.length };
+}
+
+/* ---------- COACH ---------- */
+function coachHome() {
+  const act = S.members.filter(m => m.status !== "ended");
+  const sts = act.map(m => ({ m, s: memberStatus(m) }));
+  const needs = sts.filter(x => x.s.unreadFb || x.s.uncommented || (x.s.mealGap !== null && x.s.mealGap >= 2) || x.s.lastMeal == null);
+  const weekSess = S.sessions.filter(s => { const d = daysSince(s.date); return d !== null && d < 7 && d >= 0; }).length;
+  const order = x => (x.s.unreadFb ? 4 : 0) + (x.s.uncommented ? 2 : 0) + ((x.s.mealGap ?? 9) >= 2 ? 1 : 0);
+  sts.sort((a, b) => order(b) - order(a) || a.m.name.localeCompare(b.m.name, "ko"));
+  const ended = S.members.filter(m => m.status === "ended");
+  return `
+  <div class="section">
+    <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
+    <button class="pri" data-act="newMember">+ 회원 등록</button></div>
+    <div class="stats">
+      <div class="stat"><b>${act.length}</b><span>관리 중인 회원</span></div>
+      <div class="stat"><b>${needs.length}</b><span>확인 필요</span></div>
+      <div class="stat"><b>${weekSess}</b><span>최근 7일 수업</span></div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="row between"><h2>회원 목록</h2><span class="muted" style="font-size:13px">확인할 게 많은 순</span></div>
+    ${sts.length ? `<div class="roster">${sts.map(({ m, s }) => {
+      const chips = [];
+      if (s.unreadFb) chips.push(`<span class="chip new">회원 피드백 ${s.unreadFb}</span>`);
+      if (s.uncommented) chips.push(`<span class="chip warn">식단 확인 ${s.uncommented}</span>`);
+      if (s.lastMeal == null) chips.push(`<span class="chip">식단 기록 없음</span>`);
+      else if (s.mealGap >= 2) chips.push(`<span class="chip bad">식단 ${s.mealGap}일째 없음</span>`);
+      if (m.shared) chips.push(`<span class="chip ok">기록 공개</span>`);
+      const tr = s.wDelta == null ? (s.lastW ? `<div class="num">${s.lastW}kg</div>` : "") : `<div class="num">${s.lastW}kg</div><div class="${s.wDelta > 0 ? "up" : "down"}">${s.wDelta > 0 ? "+" : ""}${s.wDelta.toFixed(1)}</div>`;
+      return `<button class="mem" data-act="openMember" data-id="${esc(m.id)}">
+        <span class="av">${esc((m.name || "?").slice(0, 1))}</span>
+        <span style="min-width:0"><span class="nm">${esc(m.name)}</span> <span class="sub">${esc(m.goal || "")}</span>
+          <span class="sub" style="display:block">마지막 수업 ${s.lastSess ? fmtD(s.lastSess) : "-"}</span>
+          <span class="chips">${chips.join("")}</span></span>
+        <span class="trend">${tr}</span></button>`;
+    }).join("")}</div>`
+      : `<div class="empty">아직 등록된 회원이 없어요.<br><b>회원 등록</b>으로 회원 아이디를 만들어 주세요.</div>`}
+  </div>
+  ${ended.length ? `<div class="section"><h2>종료된 회원</h2><div class="roster">${ended.map(m => `<button class="mem" data-act="openMember" data-id="${esc(m.id)}"><span class="av">${esc(m.name.slice(0, 1))}</span><span class="nm">${esc(m.name)}</span><span></span></button>`).join("")}</div></div>` : ""}`;
+}
+function coachMember(m) {
+  const tabs = [["sessions", "수업일지"], ["meals", "식단"], ["body", "체성분"], ["workouts", "개인운동"]];
+  const note = S.notes[m.id]?.memo;
+  return `<div class="section">
+    <button class="back" data-act="home">← 회원 목록</button>
+    <div class="row between">
+      <div class="row"><span class="av">${esc(m.name.slice(0, 1))}</span><div><h1>${esc(m.name)}</h1><div class="muted" style="font-size:13px">${esc(m.goal || "목표 미입력")}${m.start ? " · " + fmtD(m.start) + " 시작" : ""} · 아이디 <span class="num">${esc(m.loginId || "-")}</span></div></div></div>
+      <button class="ghost sm" data-act="editMember" data-id="${esc(m.id)}">정보 수정</button>
+    </div>
+    ${note ? `<div class="banner" style="white-space:pre-wrap"><b>코치 메모</b> ${esc(note)}</div>` : ""}
+    <div class="tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${ui.tab === k}" data-act="tab" data-k="${k}">${l}</button>`).join("")}</div>
+  </div>
+  <div class="section">${tabBody(m, ui.tab, true)}</div>`;
+}
+function tabBody(m, tab, coach) {
+  if (tab === "sessions") return sessionsView(m, coach);
+  if (tab === "meals") return mealsView(m, coach);
+  if (tab === "body") return bodyView(m, coach);
+  if (tab === "workouts") return workoutsView(m, coach);
+  return "";
+}
+function exTable(ex) {
+  if (!ex || !ex.length) return "";
+  return `<div class="tbl-wrap"><table><thead><tr><th>운동</th><th class="n">세트</th><th class="n">횟수</th><th class="n">무게</th></tr></thead><tbody>${ex.map(e => `<tr><td>${esc(e.name)}</td><td class="n">${esc(e.sets || "-")}</td><td class="n">${esc(e.reps || "-")}</td><td class="n">${e.kg ? esc(e.kg) + "kg" : "-"}</td></tr>`).join("")}</tbody></table></div>`;
+}
+function sessionsView(m, coach) {
+  const list = by(of("sessions", m.id), "date");
+  return `<div class="row between"><h2>수업일지</h2>${coach ? `<button class="pri sm" data-act="newSession">+ 오늘 수업 기록</button>` : ""}</div>
+  ${list.length ? list.map(s => `<article class="card stack">
+    <div class="sess-h"><span class="sess-date">${fmtD(s.date)}</span>
+      <span class="row">${coach && s.memberFb && !s.fbSeen ? `<span class="chip new">새 피드백</span>` : ""}${coach ? `<button class="ghost sm" data-act="editSession" data-id="${esc(s.id)}">수정</button>` : ""}</span></div>
+    ${exTable(s.exercises)}
+    ${s.coachFb ? `<div><div class="fb-label">강사 피드백</div><div class="fb">${esc(s.coachFb)}</div></div>` : ""}
+    ${s.memberFb ? `<div><div class="fb-label">회원 피드백</div><div class="fb mine">${esc(s.memberFb)}</div></div>` : (coach ? `<div class="muted" style="font-size:13px">회원 피드백 아직 없음</div>` : "")}
+    ${!coach ? `<div class="stack"><label class="f" for="mfb-${esc(s.id)}">${s.memberFb ? "피드백 고치기" : "오늘 수업 어땠나요?"}</label><textarea id="mfb-${esc(s.id)}" placeholder="컨디션, 힘들었던 동작, 통증이 있었던 부위를 적어 주세요">${esc(s.memberFb || "")}</textarea><button class="pri" data-act="saveMemberFb" data-id="${esc(s.id)}">피드백 보내기</button></div>` : ""}
+    ${coach && s.memberFb && !s.fbSeen ? `<button class="sm" data-act="markFb" data-id="${esc(s.id)}">확인 완료</button>` : ""}
+  </article>`).join("") : `<div class="empty">${coach ? "아직 수업 기록이 없어요. <b>오늘 수업 기록</b>으로 운동과 피드백을 남겨 보세요." : "코치님이 수업 기록을 남기면 여기에 표시돼요."}</div>`}`;
+}
+function mealsView(m, coach) {
+  const meals = of("meals", m.id);
+  const days = [...new Set(meals.map(x => x.date))].sort().reverse();
+  const order = { "아침": 1, "점심": 2, "저녁": 3, "간식": 4 };
+  return `<div class="row between"><h2>식단일지</h2>${!coach ? `<button class="pri sm" data-act="newMeal">+ 식사 올리기</button>` : ""}</div>
+  ${!coach ? `<div class="muted" style="font-size:13px">물 이외에 먹은 것은 모두 사진으로 남겨 주세요. 식사 전에 찍어 두고 저녁에 한 번에 올려도 괜찮아요.</div>` : ""}
+  ${days.length ? days.map(d => {
+    const items = meals.filter(x => x.date === d).sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
+    return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted" style="font-size:13px">${items.length}끼</span></div>
+    <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
+      ${x.photo ? `<img src="${x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
+      ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
+      <span class="cap"><b>${esc(x.type)}</b><span>${esc((x.memo || "").slice(0, 12))}</span></span></button>`).join("")}</div></div>`;
+  }).join("") : `<div class="empty">${coach ? "회원이 아직 식단을 올리지 않았어요." : "첫 식사 사진을 올려 보세요."}</div>`}`;
+}
+function spark(rowsArr, key, cls) {
+  const lab = { weight: "체중", smm: "골격근량", fat: "체지방량" }[key];
+  const pts = rowsArr.filter(r => r[key] != null && r[key] !== "").map(r => ({ d: r.date, v: +r[key] }));
+  if (!pts.length) return `<div class="chart ${cls}"><div class="k"><span class="eyebrow">${lab}</span></div><div class="muted" style="font-size:13px;margin-top:8px">기록 없음</div></div>`;
+  const last = pts[pts.length - 1], first = pts[0], dv = last.v - first.v;
+  const W = 240, H = 90, px = 8, pt = 12, pb = 18;
+  let mn = Math.min(...pts.map(p => p.v)), mx = Math.max(...pts.map(p => p.v));
+  if (mx - mn < 1) { mn -= 0.5; mx += 0.5; }
+  const x = i => pts.length === 1 ? W / 2 : px + i * (W - 2 * px) / (pts.length - 1);
+  const y = v => pt + (mx - v) * (H - pt - pb) / (mx - mn);
+  const col = key === "weight" ? "var(--accent)" : key === "smm" ? "var(--c-smm)" : "var(--c-fat)";
+  const line = pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
+  const area = pts.length > 1 ? `${line}L${x(pts.length - 1).toFixed(1)},${H - pb}L${x(0).toFixed(1)},${H - pb}Z` : "";
+  return `<div class="chart ${cls}"><div class="k"><span class="eyebrow">${lab}</span>${pts.length > 1 ? `<span class="d ${dv > 0 ? "up" : dv < 0 ? "down" : ""}">${dv > 0 ? "+" : ""}${dv.toFixed(1)}kg</span>` : ""}</div>
+  <div class="v">${last.v}<span class="muted" style="font-size:13px"> kg</span></div>
+  <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${lab} 추이">
+    <line x1="${px}" x2="${W - px}" y1="${y(mx)}" y2="${y(mx)}" stroke="var(--line)" stroke-dasharray="2 3"/>
+    <line x1="${px}" x2="${W - px}" y1="${y(mn)}" y2="${y(mn)}" stroke="var(--line)" stroke-dasharray="2 3"/>
+    ${area ? `<path d="${area}" fill="${col}" fill-opacity=".12"/>` : ""}
+    <path d="${line}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>
+    ${pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.v)}" r="${i === pts.length - 1 ? 3.5 : 2}" fill="${col}"/>`).join("")}
+    <text x="${px}" y="${H - 4}" font-size="10" fill="var(--muted)" font-family="IBM Plex Mono,monospace">${first.d.slice(5).replace("-", "/")}</text>
+    <text x="${W - px}" y="${H - 4}" font-size="10" fill="var(--muted)" text-anchor="end" font-family="IBM Plex Mono,monospace">${last.d.slice(5).replace("-", "/")}</text>
+    <text x="${W - px}" y="${y(mx) - 3}" font-size="9" fill="var(--muted)" text-anchor="end" font-family="IBM Plex Mono,monospace">${mx.toFixed(1)}</text>
+    <text x="${W - px}" y="${y(mn) + 10}" font-size="9" fill="var(--muted)" text-anchor="end" font-family="IBM Plex Mono,monospace">${mn.toFixed(1)}</text>
+  </svg></div>`;
+}
+function bodyView(m) {
+  const r = by(of("body", m.id), "date", 1);
+  return `<div class="row between"><h2>체성분 추이</h2><button class="pri sm" data-act="newBody">+ 인바디 기록</button></div>
+  <div class="charts">${spark(r, "weight", "w")}${spark(r, "smm", "smm")}${spark(r, "fat", "fat")}</div>
+  ${r.length ? `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>날짜</th><th class="n">체중</th><th class="n">골격근</th><th class="n">체지방</th><th class="n">체지방률</th><th></th></tr></thead><tbody>
+  ${[...r].reverse().map(x => `<tr><td class="num">${esc(x.date.slice(2).replace(/-/g, "."))}</td><td class="n">${x.weight ?? "-"}</td><td class="n">${x.smm ?? "-"}</td><td class="n">${x.fat ?? "-"}</td><td class="n">${x.pbf != null && x.pbf !== "" ? x.pbf + "%" : "-"}</td><td class="n"><button class="sm ghost" data-act="editBody" data-id="${esc(x.id)}">수정</button></td></tr>`).join("")}
+  </tbody></table></div></div>` : `<div class="empty">인바디 결과지의 체중·골격근량·체지방량을 입력하면 그래프가 그려져요.</div>`}`;
+}
+function workoutsView(m, coach) {
+  const list = by(of("workouts", m.id), "date");
+  return `<div class="row between"><h2>개인운동</h2>${!coach ? `<button class="pri sm" data-act="newWorkout">+ 운동 기록</button>` : ""}</div>
+  ${list.length ? list.map(w => `<article class="card stack"><div class="sess-h"><span class="sess-date">${fmtD(w.date)}</span><span class="row">${w.minutes ? `<span class="chip">${esc(w.minutes)}분</span>` : ""}${!coach ? `<button class="ghost sm" data-act="editWorkout" data-id="${esc(w.id)}">수정</button>` : ""}</span></div>
+  ${exTable(w.exercises)}${w.note ? `<div style="white-space:pre-wrap">${esc(w.note)}</div>` : ""}
+  ${w.coachComment ? `<div><div class="fb-label">코치 코멘트</div><div class="fb">${esc(w.coachComment)}</div></div>` : ""}
+  ${coach ? `<div class="row"><input id="wc-${esc(w.id)}" placeholder="코멘트 남기기" value="${esc(w.coachComment || "")}" style="flex:1;min-width:0"><button class="sm" data-act="saveWComment" data-id="${esc(w.id)}">저장</button></div>` : ""}
+  </article>`).join("") : `<div class="empty">${coach ? "회원이 기록한 개인운동이 없어요. 기록은 선택 사항이에요." : "수업 없는 날 한 운동을 남겨 두면 코치님이 함께 봐요. 안 써도 괜찮아요."}</div>`}`;
+}
+
+/* ---------- MEMBER ---------- */
+const ICONS = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
+  meals: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="13" r="7"/><path d="M12 9v4l2.5 2M9 3h6"/></svg>',
+  body: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 18l5-6 4 3 8-9"/><path d="M15 6h5v5"/></svg>',
+  workouts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12h3M19 12h3M5 8v8M19 8v8M8 6v12M16 6v12M8 12h8"/></svg>'
+};
+function memberHome(m) {
+  const s = memberStatus(m);
+  const last = by(of("sessions", m.id), "date")[0];
+  const pend = of("sessions", m.id).filter(x => !x.memberFb).length;
+  const tMeals = of("meals", m.id).filter(x => x.date === today()).length;
+  const peers = S.peers.filter(x => x.status !== "ended");
+  const fmtDelta = (a, b, goodUp) => { if (a == null || b == null) return "-"; const d = b - a; const good = goodUp ? d >= 0 : d <= 0; return `<span class="${good ? "down" : "up"}">${d > 0 ? "+" : ""}${d.toFixed(1)}</span>`; };
+  return `<div class="section"><div class="eyebrow">${fmtD(today())}</div><h1>${esc(m.name)}님, 안녕하세요</h1>
+  <div class="muted">${esc(m.goal || "")}</div></div>
+  <div class="section"><div class="stats">
+    <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
+    <div class="stat"><b>${s.lastW ?? "-"}</b><span>최근 체중 kg</span></div>
+    <div class="stat"><b>${pend}</b><span>피드백 남길 수업</span></div>
+  </div>
+  <div class="row"><button class="pri" data-act="newMeal" style="flex:1">식사 사진 올리기</button><button data-act="newBody" style="flex:1">인바디 입력</button></div></div>
+  <div class="section"><h2>최근 수업</h2>
+  ${last ? `<article class="card stack"><div class="sess-h"><span class="sess-date">${fmtD(last.date)}</span></div>${exTable(last.exercises)}
+   ${last.coachFb ? `<div><div class="fb-label">강사 피드백</div><div class="fb">${esc(last.coachFb)}</div></div>` : ""}
+   <button class="${last.memberFb ? "ghost" : "pri"}" data-act="mtab" data-k="sessions">${last.memberFb ? "수업 기록 전체 보기" : "내 피드백 남기기"}</button></article>`
+    : `<div class="empty">코치님이 첫 수업을 기록하면 여기에 보여요.</div>`}
+  ${last ? `<button class="ghost" data-act="mtab" data-k="sessions">지난 수업 모두 보기</button>` : ""}</div>
+  <div class="section"><h2>기록 공개</h2>
+   <div class="card switch"><div><b>다른 회원에게 내 체성분 변화 보여주기</b><div class="muted" style="font-size:13px">켜면 기록을 공개한 회원끼리 체중·근육량 변화만 볼 수 있어요. 식단과 피드백은 공개되지 않아요.</div></div>
+   <input type="checkbox" id="shareToggle" ${m.shared ? "checked" : ""} aria-label="기록 공개"></div>
+   ${m.shared && peers.length ? `<div class="stack">${peers.map(p => { const b = p.bodySummary || {};
+     return `<div class="card row between"><b>${esc((p.name || "?").slice(0, 1))}○○님</b><span class="num" style="font-size:13px">체중 ${fmtDelta(b.fw, b.lw, false)} · 근육 ${fmtDelta(b.fs, b.ls, true)}</span></div>`; }).join("")}</div>`
+     : (m.shared ? `<div class="muted" style="font-size:13px">아직 기록을 공개한 다른 회원이 없어요.</div>` : "")}
+  </div>`;
+}
+function renderBnav() {
+  const show = me && me.role === "member";
+  $("#bnav").hidden = !show; if (!show) return;
+  const t = [["home", "홈"], ["meals", "식단"], ["body", "체성분"], ["workouts", "개인운동"]];
+  $("#bnavIn").innerHTML = t.map(([k, l]) => `<button data-act="mtab" data-k="${k}" aria-selected="${ui.mtab === k || (ui.mtab === "sessions" && k === "home")}">${ICONS[k]}${l}</button>`).join("");
+}
+
+/* ---------- render ---------- */
+function render() {
+  if (!me) return;
+  renderHeader();
+  const app = $("#app");
+  if (me.role === "member") {
+    const m = S.members.find(x => x.id === me.memberId);
+    if (!m) { app.innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`; return; }
+    app.innerHTML = ui.mtab === "home" ? memberHome(m) : `<div class="section">${tabBody(m, ui.mtab, false)}</div>`;
+  } else {
+    const m = ui.coachMember && S.members.find(x => x.id === ui.coachMember);
+    app.innerHTML = m ? coachMember(m) : coachHome();
+  }
+  renderBnav();
+}
+
+/* ---------- sheets ---------- */
+function openSheet(html, onMount) {
+  $("#layer").innerHTML = `<div class="scrim" data-act="closeScrim"><div class="sheet" role="dialog" aria-modal="true">${html}</div></div>`;
+  onMount && onMount($("#layer .sheet"));
+}
+const closeSheet = () => { $("#layer").innerHTML = ""; };
+const curMember = () => me.role === "member" ? me.memberId : ui.coachMember;
+const find = (col, id) => S[col].find(x => x.id === id);
+
+function memberSheet(m) {
+  const isNew = !m; m = m || {};
+  const note = (m.id && S.notes[m.id]?.memo) || "";
+  openSheet(`<h2>${isNew ? "회원 등록" : "회원 정보 수정"}</h2>
+  <label class="f" for="fm-name">이름<input id="fm-name" value="${esc(m.name || "")}" placeholder="예: 송재민"></label>
+  ${isNew ? `<div class="grid2"><label class="f" for="fm-id">로그인 아이디<input id="fm-id" autocapitalize="off" spellcheck="false" placeholder="예: jaemin"></label>
+  <label class="f" for="fm-pw">첫 비밀번호 (6자 이상)<input id="fm-pw" placeholder="예: 생일 6자리"></label></div>
+  <div class="muted" style="font-size:12px">아이디는 영문 소문자·숫자로 정해 주세요. 회원에게 아이디와 비밀번호를 알려 주면 바로 로그인할 수 있어요.</div>` : ""}
+  <label class="f" for="fm-goal">목표<input id="fm-goal" value="${esc(m.goal || "")}" placeholder="예: 체지방 감량, 무릎 통증 개선"></label>
+  <div class="grid2"><label class="f" for="fm-start">시작일<input type="date" id="fm-start" value="${esc(m.start || today())}"></label>
+  <label class="f" for="fm-status">상태<select id="fm-status"><option value="active">진행 중</option><option value="ended" ${m.status === "ended" ? "selected" : ""}>종료</option></select></label></div>
+  <label class="f" for="fm-memo">코치 메모 (회원에게 안 보임)<textarea id="fm-memo" placeholder="체형 특이사항, 통증 이력 등">${esc(note)}</textarea></label>
+  <div id="fm-msg" class="muted" style="font-size:13px"></div>
+  <div class="row"><button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMember" data-id="${esc(m.id || "")}" style="flex:2">${isNew ? "등록하고 아이디 만들기" : "저장"}</button></div>`);
+}
+async function createMemberAccount(loginId, pw) {
+  const sec = initializeApp(firebaseConfig, "sec-" + Date.now());
+  const sa = getAuth(sec);
+  try { const cred = await createUserWithEmailAndPassword(sa, idToEmail(loginId), pw); const u = cred.user.uid; await signOut(sa); return u; }
+  finally { try { await sec.delete?.(); } catch (e) {} }
+}
+function exRowsHtml(ex) {
+  return (ex.length ? ex : [{}]).map(e => `<div class="ex-row"><input aria-label="운동 이름" class="ex-n" list="exList" value="${esc(e.name || "")}" placeholder="운동"><input aria-label="세트" class="ex-s" inputmode="numeric" value="${esc(e.sets || "")}" placeholder="세트"><input aria-label="횟수" class="ex-r" value="${esc(e.reps || "")}" placeholder="횟수"><input aria-label="무게" class="ex-k" inputmode="decimal" value="${esc(e.kg || "")}" placeholder="kg"><button data-act="rmEx" aria-label="삭제">✕</button></div>`).join("");
+}
+const readEx = () => [...document.querySelectorAll("#layer .ex-row:not(.ex-head)")].map(r => ({ name: r.querySelector(".ex-n").value.trim(), sets: r.querySelector(".ex-s").value.trim(), reps: r.querySelector(".ex-r").value.trim(), kg: r.querySelector(".ex-k").value.trim() })).filter(e => e.name);
+function exDatalist() {
+  const names = [...new Set([...S.sessions, ...S.workouts].flatMap(x => (x.exercises || []).map(e => e.name)))].slice(0, 60);
+  return `<datalist id="exList">${names.map(n => `<option value="${esc(n)}">`).join("")}</datalist>`;
+}
+function sessionSheet(s) {
+  s = s || {};
+  const prev = !s.id ? by(of("sessions", curMember()), "date")[0] : null;
+  openSheet(`<h2>${s.id ? "수업 기록 수정" : "수업 기록"}</h2>
+  <label class="f" for="fs-date">날짜<input type="date" id="fs-date" value="${esc(s.date || today())}"></label>
+  <div class="row between"><span class="eyebrow">운동</span>${prev && prev.exercises?.length ? `<button class="sm ghost" data-act="copyPrev">지난 수업 불러오기</button>` : ""}</div>
+  <div class="ex-row ex-head"><span>운동</span><span>세트</span><span>횟수</span><span>kg</span><span></span></div>
+  <div id="exRows" class="stack" style="gap:6px">${exRowsHtml(s.exercises || [])}</div>${exDatalist()}
+  <button class="sm" data-act="addEx">+ 운동 추가</button>
+  <label class="f" for="fs-fb">강사 피드백<textarea id="fs-fb" placeholder="자세, 보상작용, 다음 수업 방향">${esc(s.coachFb || "")}</textarea></label>
+  <div class="row">${s.id ? `<button class="ghost" data-act="delSession" data-id="${esc(s.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveSession" data-id="${esc(s.id || "")}" style="flex:2">저장</button></div>`);
+}
+async function compress(file) {
+  const img = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = r.result; }; r.onerror = rej; r.readAsDataURL(file); });
+  let max = 1000, q = .72, out = "";
+  for (let t = 0; t < 7; t++) {
+    const sc = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas"); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    out = c.toDataURL("image/jpeg", q);
+    if (out.length < 190000) break; max *= .8; q -= .06;
+  }
+  return out;
+}
+let pendingPhoto = null;
+function mealSheet(x) {
+  x = x || {}; pendingPhoto = x.photo || null;
+  if (isCoach()) {
+    openSheet(`<div class="row between"><h2>${fmtD(x.date)} ${esc(x.type)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
+    ${x.photo ? `<img class="big-img" src="${x.photo}" alt="식사 사진">` : ""}
+    ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
+    <div class="row"><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">코멘트 저장</button></div>`);
+    return;
+  }
+  openSheet(`<h2>${x.id ? "식사 수정" : "식사 올리기"}</h2>
+  <div class="grid2"><label class="f" for="fml-date">날짜<input type="date" id="fml-date" value="${esc(x.date || today())}"></label>
+  <label class="f" for="fml-type">구분<select id="fml-type">${["아침", "점심", "저녁", "간식"].map(t => `<option ${x.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
+  <label class="f" for="fml-photo">사진<input type="file" id="fml-photo" accept="image/*"></label>
+  <img id="fml-prev" class="big-img" ${pendingPhoto ? `src="${pendingPhoto}"` : "hidden"} alt="미리보기">
+  <label class="f" for="fml-memo">메모<input id="fml-memo" value="${esc(x.memo || "")}" placeholder="예: 닭가슴살 샐러드, 소스 반만"></label>
+  ${x.coachComment ? `<div><div class="fb-label">코치 코멘트</div><div class="fb">${esc(x.coachComment)}</div></div>` : ""}
+  <div class="row">${x.id ? `<button class="ghost" data-act="delMeal" data-id="${esc(x.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMeal" data-id="${esc(x.id || "")}" style="flex:2">올리기</button></div>`,
+    sh => sh.querySelector("#fml-photo").addEventListener("change", async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try { pendingPhoto = await compress(f); const p = sh.querySelector("#fml-prev"); p.src = pendingPhoto; p.hidden = false; }
+      catch (err) { toast("사진을 열 수 없어요. 다른 사진으로 시도해 주세요."); }
+    }));
+}
+function bodySheet(r) {
+  r = r || {};
+  openSheet(`<h2>${r.id ? "인바디 수정" : "인바디 기록"}</h2>
+  <label class="f" for="fb-date">측정일<input type="date" id="fb-date" value="${esc(r.date || today())}"></label>
+  <div class="grid2">
+   <label class="f" for="fb-w">체중 (kg)<input id="fb-w" inputmode="decimal" value="${esc(r.weight ?? "")}"></label>
+   <label class="f" for="fb-smm">골격근량 (kg)<input id="fb-smm" inputmode="decimal" value="${esc(r.smm ?? "")}"></label>
+   <label class="f" for="fb-fat">체지방량 (kg)<input id="fb-fat" inputmode="decimal" value="${esc(r.fat ?? "")}"></label>
+   <label class="f" for="fb-pbf">체지방률 (%)<input id="fb-pbf" inputmode="decimal" value="${esc(r.pbf ?? "")}"></label>
+  </div>
+  <div class="row">${r.id ? `<button class="ghost" data-act="delBody" data-id="${esc(r.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveBody" data-id="${esc(r.id || "")}" style="flex:2">저장</button></div>`);
+}
+function workoutSheet(w) {
+  w = w || {};
+  openSheet(`<h2>${w.id ? "개인운동 수정" : "개인운동 기록"}</h2>
+  <div class="grid2"><label class="f" for="fw-date">날짜<input type="date" id="fw-date" value="${esc(w.date || today())}"></label>
+  <label class="f" for="fw-min">운동 시간 (분)<input id="fw-min" inputmode="numeric" value="${esc(w.minutes || "")}"></label></div>
+  <div class="ex-row ex-head"><span>운동</span><span>세트</span><span>횟수</span><span>kg</span><span></span></div>
+  <div id="exRows" class="stack" style="gap:6px">${exRowsHtml(w.exercises || [])}</div>${exDatalist()}
+  <button class="sm" data-act="addEx">+ 운동 추가</button>
+  <label class="f" for="fw-note">메모<textarea id="fw-note" placeholder="러닝 30분, 컨디션, 불편했던 부위 등">${esc(w.note || "")}</textarea></label>
+  <div class="row">${w.id ? `<button class="ghost" data-act="delWorkout" data-id="${esc(w.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveWorkout" data-id="${esc(w.id || "")}" style="flex:2">저장</button></div>`);
+}
+function settingsSheet() {
+  openSheet(`<div class="row between"><h2>설정</h2><button class="ghost sm" data-act="close">닫기</button></div>
+  <div class="muted" style="font-size:13px">로그인 아이디 <span class="num">${esc((auth.currentUser?.email || "").split("@")[0])}</span></div>
+  <h3>비밀번호 바꾸기</h3>
+  <label class="f" for="st-old">지금 비밀번호<input id="st-old" type="password" autocomplete="current-password"></label>
+  <label class="f" for="st-new">새 비밀번호 (6자 이상)<input id="st-new" type="password" autocomplete="new-password"></label>
+  <button data-act="changePw">비밀번호 바꾸기</button>
+  <div id="st-msg" class="muted" style="font-size:13px"></div>
+  <button class="ghost" data-act="logout">로그아웃</button>`);
+}
+const numOrNull = v => { v = String(v).trim().replace(",", "."); return v === "" || isNaN(+v) ? null : +v; };
+async function syncSummary(mid) {
+  const m = S.members.find(x => x.id === mid); if (!m) return;
+  const sum = bodySummaryFor(mid);
+  if (JSON.stringify(sum) !== JSON.stringify(m.bodySummary || null)) await patch("members", mid, { bodySummary: sum });
+}
+function confirmDel(b) { if (b.dataset.confirm) return true; b.dataset.confirm = 1; b.textContent = "한 번 더 누르면 삭제"; b.style.color = "var(--bad)"; return false; }
+
+/* ---------- actions ---------- */
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const a = b.dataset.act, id = b.dataset.id;
+  if (a === "closeScrim") { if (e.target === b) closeSheet(); return; }
+  if (a === "close") return closeSheet();
+  if (a === "settings") return settingsSheet();
+  if (a === "logout") { closeSheet(); ui = { coachMember: null, tab: "sessions", mtab: "home" }; saveUi(); return signOut(auth); }
+  if (a === "changePw") {
+    const o = $("#st-old").value, n = $("#st-new").value, msg = $("#st-msg");
+    if (n.length < 6) { msg.textContent = "새 비밀번호는 6자 이상이어야 해요."; return; }
+    try { await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(auth.currentUser.email, o)); await updatePassword(auth.currentUser, n); msg.textContent = "비밀번호를 바꿨어요."; }
+    catch (err) { msg.textContent = (err.code || "").includes("credential") || (err.code || "").includes("wrong") ? "지금 비밀번호가 맞지 않아요." : "바꾸지 못했어요. 다시 시도해 주세요."; }
+    return;
+  }
+  if (a === "home") { ui.coachMember = null; saveUi(); render(); return window.scrollTo(0, 0); }
+  if (a === "openMember") { ui.coachMember = id; ui.tab = "sessions"; saveUi(); render(); return window.scrollTo(0, 0); }
+  if (a === "tab") { ui.tab = b.dataset.k; saveUi(); return render(); }
+  if (a === "mtab") { ui.mtab = b.dataset.k; saveUi(); render(); return window.scrollTo(0, 0); }
+  if (a === "newMember") return memberSheet();
+  if (a === "editMember") return memberSheet(S.members.find(x => x.id === id));
+  if (a === "saveMember") {
+    const name = $("#fm-name").value.trim(); const msg = $("#fm-msg");
+    if (!name) { msg.textContent = "이름을 입력해 주세요."; return; }
+    const base = { name, goal: $("#fm-goal").value.trim(), start: $("#fm-start").value, status: $("#fm-status").value };
+    const memo = $("#fm-memo").value.trim();
+    b.disabled = true;
+    try {
+      if (!id) {
+        const loginId = $("#fm-id").value.trim().toLowerCase(), pw = $("#fm-pw").value;
+        if (!/^[a-z0-9]{3,20}$/.test(loginId)) { msg.textContent = "아이디는 영문 소문자·숫자 3~20자로 정해 주세요."; return; }
+        if (loginId === COACH_ID) { msg.textContent = "코치 아이디와 다른 아이디를 써 주세요."; return; }
+        if (pw.length < 6) { msg.textContent = "비밀번호는 6자 이상이어야 해요."; return; }
+        msg.textContent = "아이디를 만드는 중…";
+        let newUid;
+        try { newUid = await createMemberAccount(loginId, pw); }
+        catch (err) { msg.textContent = (err.code || "").includes("email-already") ? "이미 쓰고 있는 아이디예요." : "아이디를 만들지 못했어요."; return; }
+        const mid = uid();
+        if (!(await create("members", mid, Object.assign(base, { loginId, uid: newUid, shared: false, bodySummary: null })))) return;
+        await create("users", newUid, { memberId: mid, loginId });
+        if (memo) await create("coachNotes", mid, { memo });
+        closeSheet(); toast(`${name}님 등록 완료 · 아이디 ${loginId}`);
+      } else {
+        if (await patch("members", id, base)) { await create("coachNotes", id, { memo }); closeSheet(); toast("저장했어요"); }
+      }
+    } finally { b.disabled = false; }
+    return;
+  }
+  if (a === "newSession") return sessionSheet();
+  if (a === "editSession") return sessionSheet(find("sessions", id));
+  if (a === "addEx") { $("#exRows").insertAdjacentHTML("beforeend", exRowsHtml([{}])); $("#exRows").lastElementChild.querySelector(".ex-n").focus(); return; }
+  if (a === "rmEx") { const r = document.querySelectorAll("#exRows .ex-row"); if (r.length > 1) b.closest(".ex-row").remove(); else b.closest(".ex-row").querySelectorAll("input").forEach(i => i.value = ""); return; }
+  if (a === "copyPrev") { const p = by(of("sessions", curMember()), "date")[0]; $("#exRows").innerHTML = exRowsHtml(p.exercises || []); return; }
+  if (a === "saveSession") {
+    const data = { date: $("#fs-date").value || today(), exercises: readEx(), coachFb: $("#fs-fb").value.trim() };
+    b.disabled = true;
+    const ok = id ? await patch("sessions", id, data) : await create("sessions", uid(), Object.assign(data, { memberId: curMember(), memberFb: "", fbSeen: false }));
+    b.disabled = false; if (ok) { closeSheet(); toast("수업을 기록했어요"); }
+    return;
+  }
+  if (a === "delSession") { if (confirmDel(b) && await del("sessions", id)) { closeSheet(); toast("삭제했어요"); } return; }
+  if (a === "saveMemberFb") {
+    const v = $("#mfb-" + id).value.trim(); if (!v) return toast("내용을 적어 주세요.");
+    b.disabled = true; if (await patch("sessions", id, { memberFb: v, fbSeen: false })) toast("코치님께 보냈어요"); b.disabled = false; return;
+  }
+  if (a === "markFb") { await patch("sessions", id, { fbSeen: true }); return; }
+  if (a === "newMeal") return mealSheet();
+  if (a === "openMeal") return mealSheet(find("meals", id));
+  if (a === "saveMeal") {
+    const memo = $("#fml-memo").value.trim();
+    if (!pendingPhoto && !memo) return toast("사진이나 메모 중 하나는 있어야 해요.");
+    const data = { date: $("#fml-date").value || today(), type: $("#fml-type").value, memo, photo: pendingPhoto || null, seen: false };
+    b.disabled = true; b.textContent = "올리는 중…";
+    const ok = id ? await patch("meals", id, data) : await create("meals", uid(), Object.assign(data, { memberId: curMember() }));
+    b.disabled = false; b.textContent = "올리기"; if (ok) { closeSheet(); toast("식사를 올렸어요"); }
+    return;
+  }
+  if (a === "delMeal") { if (confirmDel(b) && await del("meals", id)) { closeSheet(); toast("삭제했어요"); } return; }
+  if (a === "saveMealComment" || a === "markMealSeen") {
+    const p = { seen: true }; if (a === "saveMealComment") p.coachComment = $("#fmc").value.trim();
+    if (await patch("meals", id, p)) { closeSheet(); toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요"); }
+    return;
+  }
+  if (a === "newBody") return bodySheet();
+  if (a === "editBody") return bodySheet(find("body", id));
+  if (a === "saveBody") {
+    const w = numOrNull($("#fb-w").value), smm = numOrNull($("#fb-smm").value), fat = numOrNull($("#fb-fat").value), pbf = numOrNull($("#fb-pbf").value);
+    if (w == null && smm == null && fat == null) return toast("체중, 골격근량, 체지방량 중 하나는 입력해 주세요.");
+    const mid = id ? find("body", id).memberId : curMember();
+    const data = { date: $("#fb-date").value || today(), weight: w, smm, fat, pbf };
+    b.disabled = true;
+    const ok = id ? await patch("body", id, data) : await create("body", uid(), Object.assign(data, { memberId: mid }));
+    b.disabled = false;
+    if (ok) { closeSheet(); toast("체성분을 저장했어요"); setTimeout(() => syncSummary(mid), 800); }
+    return;
+  }
+  if (a === "delBody") { const mid = find("body", id)?.memberId; if (confirmDel(b) && await del("body", id)) { closeSheet(); toast("삭제했어요"); setTimeout(() => syncSummary(mid), 800); } return; }
+  if (a === "newWorkout") return workoutSheet();
+  if (a === "editWorkout") return workoutSheet(find("workouts", id));
+  if (a === "saveWorkout") {
+    const ex = readEx(), note = $("#fw-note").value.trim(); if (!ex.length && !note) return toast("운동이나 메모를 입력해 주세요.");
+    const data = { date: $("#fw-date").value || today(), minutes: $("#fw-min").value.trim(), exercises: ex, note };
+    b.disabled = true;
+    const ok = id ? await patch("workouts", id, data) : await create("workouts", uid(), Object.assign(data, { memberId: curMember() }));
+    b.disabled = false; if (ok) { closeSheet(); toast("운동을 기록했어요"); }
+    return;
+  }
+  if (a === "delWorkout") { if (confirmDel(b) && await del("workouts", id)) { closeSheet(); toast("삭제했어요"); } return; }
+  if (a === "saveWComment") { if (await patch("workouts", id, { coachComment: $("#wc-" + id).value.trim() })) toast("코멘트를 남겼어요"); return; }
+});
+document.addEventListener("change", async e => {
+  if (e.target.id === "shareToggle") {
+    const mid = me.memberId;
+    if (await patch("members", mid, { shared: e.target.checked, bodySummary: bodySummaryFor(mid) })) toast(e.target.checked ? "체성분 변화를 공개했어요" : "공개를 껐어요");
+  }
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
+
+if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
