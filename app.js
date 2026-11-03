@@ -49,11 +49,24 @@ async function del(col, id) {
 }
 
 /* ---------- auth ---------- */
+let coachProfile;
+async function getCoachProfile(force) {
+  if (coachProfile !== undefined && !force) return coachProfile;
+  try { const d = await getDoc(doc(fs, "public", "coach")); coachProfile = d.exists() ? d.data() : null; } catch (e) { coachProfile = null; }
+  return coachProfile;
+}
+function coachCard(p, big) {
+  if (!p || (!p.name && !p.photo)) return "";
+  return `<div class="coach-card${big ? " big" : ""}">
+    ${p.photo ? `<img class="coach-ph" src="${p.photo}" alt="${esc(p.name || "코치")} 사진">` : `<span class="coach-ph av">${esc((p.name || "코").slice(0, 1))}</span>`}
+    <div style="min-width:0"><div class="eyebrow">${big ? "PT노트 · 담당 코치" : "담당 코치"}</div><div class="coach-nm">${esc(p.name || "")}</div>
+    ${p.intro ? `<div class="coach-intro">${esc(p.intro)}</div>` : ""}</div></div>`;
+}
 function loginView(msg) {
   $("#bnav").hidden = true; $("#hdrRight").innerHTML = "";
   $("#app").innerHTML = `<div class="login">
-    <div class="login-mark"><img src="icon-192.png" alt="" width="72" height="72"></div>
-    <h1>PT노트</h1>
+    <div id="lg-head"><div class="login-mark"><img src="icon-192.png" alt="" width="72" height="72"></div>
+    <h1>PT노트</h1></div>
     <p class="muted">아이디와 비밀번호로 로그인하세요.</p>
     <form id="loginForm" class="stack">
       <label class="f" for="lg-id">아이디<input id="lg-id" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
@@ -69,6 +82,7 @@ function loginView(msg) {
     </details>
   </div>`;
   $("#toSignup").onclick = signupView;
+  getCoachProfile().then(p => { const h = $("#lg-head"); const c = coachCard(p, true); if (h && c) h.innerHTML = c; });
   $("#loginForm").addEventListener("submit", async e => {
     e.preventDefault();
     const id = $("#lg-id").value.trim().toLowerCase(), pw = $("#lg-pw").value;
@@ -393,8 +407,10 @@ function memberHome(m) {
   const tMeals = of("meals", m.id).filter(x => x.date === today()).length;
   const peers = S.peers.filter(x => x.status !== "ended");
   const fmtDelta = (a, b, goodUp) => { if (a == null || b == null) return "-"; const d = b - a; const good = goodUp ? d >= 0 : d <= 0; return `<span class="${good ? "down" : "up"}">${d > 0 ? "+" : ""}${d.toFixed(1)}</span>`; };
+  if (coachProfile === undefined) getCoachProfile().then(() => render());
   return `<div class="section"><div class="eyebrow">${fmtD(today())}</div><h1>${esc(m.name)}님, 안녕하세요</h1>
   <div class="muted">${esc(m.goal || "")}</div></div>
+  ${coachProfile ? `<div class="section">${coachCard(coachProfile)}</div>` : ""}
   <div class="section"><div class="stats">
     <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
     <div class="stat"><b>${s.lastW ?? "-"}</b><span>최근 체중 kg</span></div>
@@ -593,7 +609,15 @@ async function runImport(file, msg) {
   }
   msg.textContent = fail ? `${n - fail}건을 옮겼고 ${fail}건은 실패했어요. 파일을 한 번 더 올려 주세요.` : `회원 ${list.length}명, 기록 ${n}건을 옮겼어요.`;
 }
+let pendingProfilePhoto = null;
+async function squarePhoto(file) {
+  const img = await loadImg(file); const n = Math.min(img.width, img.height), size = 360;
+  const c = document.createElement("canvas"); c.width = c.height = size;
+  c.getContext("2d").drawImage(img, (img.width - n) / 2, (img.height - n) / 2, n, n, 0, 0, size, size);
+  return c.toDataURL("image/jpeg", .8);
+}
 function settingsSheet() {
+  if (isCoach() && coachProfile === undefined) { getCoachProfile().then(() => { if ($("#layer").innerHTML) settingsSheet(); }); }
   openSheet(`<div class="row between"><h2>설정</h2><button class="ghost sm" data-act="close">닫기</button></div>
   <div class="muted" style="font-size:13px">로그인 아이디 <span class="num">${esc((auth.currentUser?.email || "").split("@")[0])}</span></div>
   <h3>비밀번호 바꾸기</h3>
@@ -601,7 +625,13 @@ function settingsSheet() {
   <label class="f" for="st-new">새 비밀번호 (6자 이상)<input id="st-new" type="password" autocomplete="new-password"></label>
   <button data-act="changePw">비밀번호 바꾸기</button>
   <div id="st-msg" class="muted" style="font-size:13px"></div>
-  ${isCoach() ? `<h3>저장 공간 관리</h3>
+  ${isCoach() ? `<h3>내 프로필 (로그인 화면·회원 홈에 보여요)</h3>
+  <div class="row"><img id="pf-prev" class="coach-ph" ${coachProfile?.photo ? `src="${coachProfile.photo}"` : "hidden"} alt="프로필 미리보기">
+  <label class="f" for="pf-photo" style="flex:1">프로필 사진<input type="file" id="pf-photo" accept="image/*"></label></div>
+  <label class="f" for="pf-name">표시 이름<input id="pf-name" maxlength="30" value="${esc(coachProfile?.name || "")}" placeholder="예: 최효준 코치"></label>
+  <label class="f" for="pf-intro">소개 (2~3줄)<textarea id="pf-intro" maxlength="200" placeholder="예: 경력 16년 · 체형 분석 기반 PT · 생활스포츠지도사 2급 · KACEP 운동사">${esc(coachProfile?.intro || "")}</textarea></label>
+  <button data-act="saveProfile">프로필 저장</button>
+  <h3>저장 공간 관리</h3>
   <div class="muted" style="font-size:13px">식사 원본 사진이 저장 공간 대부분을 차지해요. 오래된 원본을 지워도 목록의 작은 사진과 메모, 코멘트는 남아요.</div>
   <div class="row"><select id="st-days" style="width:auto"><option value="90">90일 지난 사진</option><option value="180" selected>180일 지난 사진</option><option value="365">1년 지난 사진</option></select>
   <button data-act="cleanPhotos">오래된 원본 사진 정리</button></div>
@@ -645,6 +675,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "logout") { closeSheet(); ui = { coachMember: null, tab: "sessions", mtab: "home" }; saveUi(); return signOut(auth); }
+  if (a === "saveProfile") {
+    const data = { name: $("#pf-name").value.trim(), intro: $("#pf-intro").value.trim(), photo: pendingProfilePhoto || coachProfile?.photo || null };
+    b.disabled = true;
+    if (await create("public", "coach", data)) { coachProfile = data; pendingProfilePhoto = null; toast("프로필을 저장했어요"); }
+    b.disabled = false; return;
+  }
   if (a === "changePw") {
     const o = $("#st-old").value, n = $("#st-new").value, msg = $("#st-msg");
     if (n.length < 6) { msg.textContent = "새 비밀번호는 6자 이상이어야 해요."; return; }
@@ -771,6 +807,7 @@ document.addEventListener("click", async e => {
   if (a === "saveWComment") { if (await patch("workouts", id, { coachComment: $("#wc-" + id).value.trim() })) toast("코멘트를 남겼어요"); return; }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "pf-photo" && e.target.files[0]) { try { pendingProfilePhoto = await squarePhoto(e.target.files[0]); const p = $("#pf-prev"); p.src = pendingProfilePhoto; p.hidden = false; } catch (err) { toast("사진을 열 수 없어요."); } return; }
   if (e.target.id === "st-import" && e.target.files[0]) { e.target.disabled = true; await runImport(e.target.files[0], $("#st-imp-msg")); e.target.disabled = false; e.target.value = ""; return; }
   if (e.target.id === "shareToggle") {
     const mid = me.memberId;

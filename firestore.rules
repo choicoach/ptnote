@@ -21,6 +21,10 @@ service cloud.firestore {
         && request.resource.data.loginId == request.auth.token.email.split('@')[0];
       allow delete: if isCoach();
     }
+    match /public/{id} {
+      allow read: if true;
+      allow write: if isCoach();
+    }
     match /coachNotes/{mid} {
       allow read, write: if isCoach();
     }
