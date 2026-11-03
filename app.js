@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig, COACH_ID, ID_DOMAIN } from "./config.js";
 
 const app = initializeApp(firebaseConfig);
@@ -61,8 +61,9 @@ function loginView(msg) {
       <div id="lg-msg" class="muted" style="font-size:13px">${esc(msg || "")}</div>
     </form>
     <details class="install"><summary>홈 화면에 앱 아이콘 만들기</summary>
-      <p><b>아이폰</b>: 사파리에서 열고 아래 공유 버튼 → "홈 화면에 추가"</p>
-      <p><b>갤럭시</b>: 크롬 메뉴(⋮) → "홈 화면에 추가" 또는 "앱 설치"</p>
+      <p><b>아이폰</b>: 사파리(또는 크롬)에서 이 주소를 열고 공유 버튼(□↑) → "홈 화면에 추가" → 추가</p>
+      <p><b>갤럭시</b>: 크롬에서 열고 메뉴(⋮) → "홈 화면에 추가" 또는 "앱 설치"</p>
+      <p>카카오톡 등 다른 앱 안에서 열었다면 먼저 "다른 브라우저로 열기"를 눌러 주세요.</p>
     </details>
   </div>`;
   $("#loginForm").addEventListener("submit", async e => {
@@ -85,9 +86,24 @@ function loginView(msg) {
   });
 }
 
-function stopListening() { unsubs.forEach(u => { try { u(); } catch (e) {} }); unsubs = []; }
+const LS = {};
+function rebuild(col) { const m = new Map(); Object.values(LS).filter(r => r.col === col).forEach(r => r.rows.forEach(x => m.set(x.id, x))); S[col] = [...m.values()]; }
+function stopQ(name) { const r = LS[name]; if (!r) return; try { r.unsub(); } catch (e) {} delete LS[name]; rebuild(r.col); }
+function stopPrefix(p) { Object.keys(LS).filter(k => k.startsWith(p)).forEach(stopQ); }
+function listenQ(name, col, q) {
+  stopQ(name);
+  const rec = { col, rows: [] }; LS[name] = rec;
+  rec.unsub = onSnapshot(q, s => { rec.rows = rows(s); rebuild(col); render(); }, err => { console.error(err); toast("기록을 불러오지 못했어요."); });
+}
+function stopListening() { unsubs.forEach(u => { try { u(); } catch (e) {} }); unsubs = []; Object.keys(LS).forEach(stopQ); }
 function listen(q, cb) { unsubs.push(onSnapshot(q, cb, err => { console.error(err); toast("기록을 불러오지 못했어요."); })); }
 const rows = snap => snap.docs.map(d => Object.assign({ id: d.id }, d.data()));
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
+function openDetail(mid) {
+  stopPrefix("d-");
+  if (!mid) return;
+  COLS.forEach(c => listenQ("d-" + c, c, query(collection(fs, c), where("memberId", "==", mid))));
+}
 
 onAuthStateChanged(auth, async user => {
   stopListening();
@@ -97,8 +113,11 @@ onAuthStateChanged(auth, async user => {
   $("#app").innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`;
   if (user.email === idToEmail(COACH_ID)) {
     me = { role: "coach" };
-    listen(collection(fs, "members"), s => { S.members = rows(s); render(); });
-    COLS.forEach(c => listen(collection(fs, c), s => { S[c] = rows(s); render(); }));
+    listenQ("g-members", "members", collection(fs, "members"));
+    listenQ("g-sessions", "sessions", query(collection(fs, "sessions"), where("date", ">=", daysAgo(60))));
+    listenQ("g-meals", "meals", query(collection(fs, "meals"), where("date", ">=", daysAgo(14))));
+    listenQ("g-workouts", "workouts", query(collection(fs, "workouts"), where("date", ">=", daysAgo(30))));
+    if (ui.coachMember) openDetail(ui.coachMember);
     listen(collection(fs, "coachNotes"), s => { S.notes = {}; s.docs.forEach(d => S.notes[d.id] = d.data()); });
     render();
     return;
@@ -123,14 +142,14 @@ function renderHeader() {
 
 /* ---------- status helpers ---------- */
 function memberStatus(m) {
-  const meals = of("meals", m.id), sess = of("sessions", m.id), body = by(of("body", m.id), "date", 1);
+  const meals = of("meals", m.id), sess = of("sessions", m.id);
   const lastMeal = by(meals, "date")[0]?.date, lastSess = by(sess, "date")[0]?.date;
   const unreadFb = sess.filter(s => s.memberFb && !s.fbSeen).length;
   const uncommented = meals.filter(x => !x.coachComment && !x.seen).length;
   const mealGap = daysSince(lastMeal);
-  let wDelta = null;
-  if (body.length >= 2 && body[0].weight && body[body.length - 1].weight) wDelta = body[body.length - 1].weight - body[0].weight;
-  return { lastMeal, lastSess, unreadFb, uncommented, mealGap, wDelta, lastW: body.length ? body[body.length - 1].weight : null };
+  const bs = m.bodySummary || (me && me.role === "member" ? bodySummaryFor(m.id) : null) || {};
+  const wDelta = bs.n > 1 && bs.fw != null && bs.lw != null ? bs.lw - bs.fw : null;
+  return { lastMeal, lastSess, unreadFb, uncommented, mealGap, wDelta, lastW: bs.lw ?? null };
 }
 function bodySummaryFor(mid) {
   const r = by(of("body", mid), "date", 1).filter(x => x.weight != null || x.smm != null);
@@ -164,7 +183,7 @@ function coachHome() {
       const chips = [];
       if (s.unreadFb) chips.push(`<span class="chip new">회원 피드백 ${s.unreadFb}</span>`);
       if (s.uncommented) chips.push(`<span class="chip warn">식단 확인 ${s.uncommented}</span>`);
-      if (s.lastMeal == null) chips.push(`<span class="chip">식단 기록 없음</span>`);
+      if (s.lastMeal == null) chips.push(`<span class="chip">최근 2주 식단 없음</span>`);
       else if (s.mealGap >= 2) chips.push(`<span class="chip bad">식단 ${s.mealGap}일째 없음</span>`);
       if (m.shared) chips.push(`<span class="chip ok">기록 공개</span>`);
       const tr = s.wDelta == null ? (s.lastW ? `<div class="num">${s.lastW}kg</div>` : "") : `<div class="num">${s.lastW}kg</div><div class="${s.wDelta > 0 ? "up" : "down"}">${s.wDelta > 0 ? "+" : ""}${s.wDelta.toFixed(1)}</div>`;
@@ -227,7 +246,7 @@ function mealsView(m, coach) {
     const items = meals.filter(x => x.date === d).sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
     return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted" style="font-size:13px">${items.length}끼</span></div>
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
-      ${x.photo ? `<img src="${x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
+      ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
       ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
       <span class="cap"><b>${esc(x.type)}</b><span>${esc((x.memo || "").slice(0, 12))}</span></span></button>`).join("")}</div></div>`;
   }).join("") : `<div class="empty">${coach ? "회원이 아직 식단을 올리지 않았어요." : "첫 식사 사진을 올려 보세요."}</div>`}`;
@@ -386,42 +405,57 @@ function sessionSheet(s) {
   <label class="f" for="fs-fb">강사 피드백<textarea id="fs-fb" placeholder="자세, 보상작용, 다음 수업 방향">${esc(s.coachFb || "")}</textarea></label>
   <div class="row">${s.id ? `<button class="ghost" data-act="delSession" data-id="${esc(s.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveSession" data-id="${esc(s.id || "")}" style="flex:2">저장</button></div>`);
 }
-async function compress(file) {
-  const img = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = r.result; }; r.onerror = rej; r.readAsDataURL(file); });
-  let max = 1000, q = .72, out = "";
+async function loadImg(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = r.result; }; r.onerror = rej; r.readAsDataURL(file); });
+}
+function shrink(img, max, q, limit) {
+  let out = "";
   for (let t = 0; t < 7; t++) {
     const sc = Math.min(1, max / Math.max(img.width, img.height));
     const c = document.createElement("canvas"); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
     c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
     out = c.toDataURL("image/jpeg", q);
-    if (out.length < 190000) break; max *= .8; q -= .06;
+    if (out.length < limit) break; max *= .8; q -= .06;
   }
   return out;
 }
+async function makePhotos(file) {
+  const img = await loadImg(file);
+  return { full: shrink(img, 1000, .72, 190000), thumb: shrink(img, 320, .6, 24000) };
+}
+async function showFull(x, sel) {
+  if (!x.hasPhoto) return;
+  try { const d = await getDoc(doc(fs, "photos", x.id)); const el = document.querySelector(sel); if (d.exists() && el) el.src = d.data().data; } catch (e) {}
+}
 let pendingPhoto = null;
 function mealSheet(x) {
-  x = x || {}; pendingPhoto = x.photo || null;
+  x = x || {}; pendingPhoto = null;
+  const shown = x.thumb || x.photo;
   if (isCoach()) {
     openSheet(`<div class="row between"><h2>${fmtD(x.date)} ${esc(x.type)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
-    ${x.photo ? `<img class="big-img" src="${x.photo}" alt="식사 사진">` : ""}
+    ${shown ? `<img id="meal-big" class="big-img" src="${shown}" alt="식사 사진">` : ""}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     <label class="f" for="fmc">코치 코멘트<textarea id="fmc" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
     <div class="row"><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">코멘트 저장</button></div>`);
+    showFull(x, "#meal-big");
     return;
   }
   openSheet(`<h2>${x.id ? "식사 수정" : "식사 올리기"}</h2>
   <div class="grid2"><label class="f" for="fml-date">날짜<input type="date" id="fml-date" value="${esc(x.date || today())}"></label>
   <label class="f" for="fml-type">구분<select id="fml-type">${["아침", "점심", "저녁", "간식"].map(t => `<option ${x.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
   <label class="f" for="fml-photo">사진<input type="file" id="fml-photo" accept="image/*"></label>
-  <img id="fml-prev" class="big-img" ${pendingPhoto ? `src="${pendingPhoto}"` : "hidden"} alt="미리보기">
+  <img id="fml-prev" class="big-img" ${shown ? `src="${shown}"` : "hidden"} alt="미리보기">
   <label class="f" for="fml-memo">메모<input id="fml-memo" value="${esc(x.memo || "")}" placeholder="예: 닭가슴살 샐러드, 소스 반만"></label>
   ${x.coachComment ? `<div><div class="fb-label">코치 코멘트</div><div class="fb">${esc(x.coachComment)}</div></div>` : ""}
   <div class="row">${x.id ? `<button class="ghost" data-act="delMeal" data-id="${esc(x.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMeal" data-id="${esc(x.id || "")}" style="flex:2">올리기</button></div>`,
-    sh => sh.querySelector("#fml-photo").addEventListener("change", async e => {
-      const f = e.target.files[0]; if (!f) return;
-      try { pendingPhoto = await compress(f); const p = sh.querySelector("#fml-prev"); p.src = pendingPhoto; p.hidden = false; }
-      catch (err) { toast("사진을 열 수 없어요. 다른 사진으로 시도해 주세요."); }
-    }));
+    sh => {
+      if (x.id) showFull(x, "#fml-prev");
+      sh.querySelector("#fml-photo").addEventListener("change", async e => {
+        const f = e.target.files[0]; if (!f) return;
+        try { pendingPhoto = await makePhotos(f); const p = sh.querySelector("#fml-prev"); p.src = pendingPhoto.full; p.hidden = false; }
+        catch (err) { toast("사진을 열 수 없어요. 다른 사진으로 시도해 주세요."); }
+      });
+    });
 }
 function bodySheet(r) {
   r = r || {};
@@ -454,6 +488,11 @@ function settingsSheet() {
   <label class="f" for="st-new">새 비밀번호 (6자 이상)<input id="st-new" type="password" autocomplete="new-password"></label>
   <button data-act="changePw">비밀번호 바꾸기</button>
   <div id="st-msg" class="muted" style="font-size:13px"></div>
+  ${isCoach() ? `<h3>저장 공간 관리</h3>
+  <div class="muted" style="font-size:13px">식사 원본 사진이 저장 공간 대부분을 차지해요. 오래된 원본을 지워도 목록의 작은 사진과 메모, 코멘트는 남아요.</div>
+  <div class="row"><select id="st-days" style="width:auto"><option value="90">90일 지난 사진</option><option value="180" selected>180일 지난 사진</option><option value="365">1년 지난 사진</option></select>
+  <button data-act="cleanPhotos">오래된 원본 사진 정리</button></div>
+  <div id="st-clean" class="muted" style="font-size:13px"></div>` : ""}
   <button class="ghost" data-act="logout">로그아웃</button>`);
 }
 const numOrNull = v => { v = String(v).trim().replace(",", "."); return v === "" || isNaN(+v) ? null : +v; };
@@ -479,8 +518,20 @@ document.addEventListener("click", async e => {
     catch (err) { msg.textContent = (err.code || "").includes("credential") || (err.code || "").includes("wrong") ? "지금 비밀번호가 맞지 않아요." : "바꾸지 못했어요. 다시 시도해 주세요."; }
     return;
   }
-  if (a === "home") { ui.coachMember = null; saveUi(); render(); return window.scrollTo(0, 0); }
-  if (a === "openMember") { ui.coachMember = id; ui.tab = "sessions"; saveUi(); render(); return window.scrollTo(0, 0); }
+  if (a === "home") { ui.coachMember = null; saveUi(); openDetail(null); render(); return window.scrollTo(0, 0); }
+  if (a === "openMember") { ui.coachMember = id; ui.tab = "sessions"; saveUi(); openDetail(id); render(); return window.scrollTo(0, 0); }
+  if (a === "cleanPhotos") {
+    const days = +$("#st-days").value, msg = $("#st-clean");
+    if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = `${days}일 지난 원본 사진 삭제 — 한 번 더 누르세요`; b.style.color = "var(--bad)"; return; }
+    b.disabled = true; msg.textContent = "찾는 중…";
+    try {
+      const snap = await getDocs(query(collection(fs, "photos"), where("date", "<", daysAgo(days))));
+      let n = 0; for (const d of snap.docs) { await deleteDoc(d.ref); n++; msg.textContent = `정리 중… ${n}/${snap.size}`; }
+      msg.textContent = n ? `원본 사진 ${n}장을 정리했어요. 목록의 작은 사진은 그대로 남아요.` : "정리할 사진이 없어요.";
+    } catch (e) { console.error(e); msg.textContent = "정리하지 못했어요. 다시 시도해 주세요."; }
+    b.disabled = false; delete b.dataset.confirm; b.style.color = ""; b.textContent = "오래된 원본 사진 정리";
+    return;
+  }
   if (a === "tab") { ui.tab = b.dataset.k; saveUi(); return render(); }
   if (a === "mtab") { ui.mtab = b.dataset.k; saveUi(); render(); return window.scrollTo(0, 0); }
   if (a === "newMember") return memberSheet();
@@ -534,14 +585,25 @@ document.addEventListener("click", async e => {
   if (a === "openMeal") return mealSheet(find("meals", id));
   if (a === "saveMeal") {
     const memo = $("#fml-memo").value.trim();
-    if (!pendingPhoto && !memo) return toast("사진이나 메모 중 하나는 있어야 해요.");
-    const data = { date: $("#fml-date").value || today(), type: $("#fml-type").value, memo, photo: pendingPhoto || null, seen: false };
+    const old = id ? find("meals", id) : null;
+    if (!pendingPhoto && !memo && !(old && (old.thumb || old.photo))) return toast("사진이나 메모 중 하나는 있어야 해요.");
+    const data = { date: $("#fml-date").value || today(), type: $("#fml-type").value, memo, seen: false };
+    const mid = old ? old.memberId : curMember();
+    const mealId = id || uid();
     b.disabled = true; b.textContent = "올리는 중…";
-    const ok = id ? await patch("meals", id, data) : await create("meals", uid(), Object.assign(data, { memberId: curMember() }));
+    let ok = true;
+    if (pendingPhoto) {
+      ok = await create("photos", mealId, { memberId: mid, date: data.date, data: pendingPhoto.full });
+      Object.assign(data, { thumb: pendingPhoto.thumb, hasPhoto: true, photo: null });
+    }
+    if (ok) ok = id ? await patch("meals", id, data) : await create("meals", mealId, Object.assign(data, { memberId: mid }));
     b.disabled = false; b.textContent = "올리기"; if (ok) { closeSheet(); toast("식사를 올렸어요"); }
     return;
   }
-  if (a === "delMeal") { if (confirmDel(b) && await del("meals", id)) { closeSheet(); toast("삭제했어요"); } return; }
+  if (a === "delMeal") {
+    if (confirmDel(b)) { const x = find("meals", id); if (await del("meals", id)) { if (x && x.hasPhoto) { try { await deleteDoc(doc(fs, "photos", id)); } catch (e) {} } closeSheet(); toast("삭제했어요"); } }
+    return;
+  }
   if (a === "saveMealComment" || a === "markMealSeen") {
     const p = { seen: true }; if (a === "saveMealComment") p.coachComment = $("#fmc").value.trim();
     if (await patch("meals", id, p)) { closeSheet(); toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요"); }
