@@ -13,6 +13,14 @@ service cloud.firestore {
       allow read: if isCoach() || (signedIn() && request.auth.uid == uid);
       allow write: if isCoach();
     }
+    match /requests/{uid} {
+      allow read: if isCoach() || (signedIn() && request.auth.uid == uid);
+      allow create, update: if signedIn() && request.auth.uid == uid && !isMember()
+        && request.resource.data.keys().hasOnly(['name', 'goal', 'loginId', 'createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 20
+        && request.resource.data.loginId == request.auth.token.email.split('@')[0];
+      allow delete: if isCoach();
+    }
     match /coachNotes/{mid} {
       allow read, write: if isCoach();
     }

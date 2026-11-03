@@ -9,7 +9,8 @@ let fs;
 try { fs = initializeFirestore(app, { localCache: persistentLocalCache() }); } catch (e) { fs = initializeFirestore(app, {}); }
 
 const COLS = ["sessions", "meals", "body", "workouts"];
-const S = { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [] };
+const S = { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [] };
+let pendingSignup = null;
 let me = null; // {role:'coach'} | {role:'member', memberId}
 let unsubs = [];
 let ui = { coachMember: null, tab: "sessions", mtab: "home" };
@@ -53,19 +54,21 @@ function loginView(msg) {
   $("#app").innerHTML = `<div class="login">
     <div class="login-mark"><img src="icon-192.png" alt="" width="72" height="72"></div>
     <h1>PT노트</h1>
-    <p class="muted">코치님께 받은 아이디와 비밀번호로 로그인하세요.</p>
+    <p class="muted">아이디와 비밀번호로 로그인하세요.</p>
     <form id="loginForm" class="stack">
       <label class="f" for="lg-id">아이디<input id="lg-id" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
       <label class="f" for="lg-pw">비밀번호<input id="lg-pw" type="password" autocomplete="current-password" required minlength="6"></label>
       <button class="pri" type="submit">로그인</button>
       <div id="lg-msg" class="muted" style="font-size:13px">${esc(msg || "")}</div>
     </form>
+    <button type="button" class="ghost" id="toSignup">처음이세요? 회원 가입 신청하기</button>
     <details class="install"><summary>홈 화면에 앱 아이콘 만들기</summary>
       <p><b>아이폰</b>: 사파리(또는 크롬)에서 이 주소를 열고 공유 버튼(□↑) → "홈 화면에 추가" → 추가</p>
       <p><b>갤럭시</b>: 크롬에서 열고 메뉴(⋮) → "홈 화면에 추가" 또는 "앱 설치"</p>
       <p>카카오톡 등 다른 앱 안에서 열었다면 먼저 "다른 브라우저로 열기"를 눌러 주세요.</p>
     </details>
   </div>`;
+  $("#toSignup").onclick = signupView;
   $("#loginForm").addEventListener("submit", async e => {
     e.preventDefault();
     const id = $("#lg-id").value.trim().toLowerCase(), pw = $("#lg-pw").value;
@@ -84,6 +87,73 @@ function loginView(msg) {
       else m.textContent = "아이디 또는 비밀번호가 맞지 않아요.";
     }
   });
+}
+
+function signupView() {
+  $("#bnav").hidden = true; $("#hdrRight").innerHTML = "";
+  $("#app").innerHTML = `<div class="login">
+    <h1>가입 신청</h1>
+    <p class="muted">신청하면 코치님이 확인 후 승인해요. 승인되면 바로 앱을 쓸 수 있어요.</p>
+    <form id="suForm" class="stack">
+      <label class="f" for="su-name">이름<input id="su-name" required maxlength="20" placeholder="예: 송재민"></label>
+      <label class="f" for="su-id">사용할 아이디 (영문 소문자·숫자 3~20자)<input id="su-id" required autocapitalize="off" spellcheck="false" autocomplete="username" placeholder="예: jaemin"></label>
+      <label class="f" for="su-pw">비밀번호 (6자 이상)<input id="su-pw" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label class="f" for="su-pw2">비밀번호 확인<input id="su-pw2" type="password" required minlength="6" autocomplete="new-password"></label>
+      <label class="f" for="su-goal">운동 목표 (선택)<input id="su-goal" maxlength="40" placeholder="예: 체지방 감량, 허리 통증 개선"></label>
+      <button class="pri" type="submit">가입 신청</button>
+      <div id="su-msg" class="muted" style="font-size:13px"></div>
+    </form>
+    <button type="button" class="ghost" id="toLogin">이미 아이디가 있어요 · 로그인</button>
+  </div>`;
+  $("#toLogin").onclick = () => loginView();
+  $("#suForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const m = $("#su-msg");
+    const name = $("#su-name").value.trim(), id = $("#su-id").value.trim().toLowerCase(), pw = $("#su-pw").value, pw2 = $("#su-pw2").value, goal = $("#su-goal").value.trim();
+    if (!name) { m.textContent = "이름을 적어 주세요."; return; }
+    if (!/^[a-z0-9]{3,20}$/.test(id) || id === COACH_ID) { m.textContent = "아이디는 영문 소문자·숫자 3~20자로 정해 주세요."; return; }
+    if (pw.length < 6) { m.textContent = "비밀번호는 6자 이상이어야 해요."; return; }
+    if (pw !== pw2) { m.textContent = "비밀번호 확인이 맞지 않아요."; return; }
+    m.textContent = "신청하는 중…";
+    pendingSignup = { name, goal, loginId: id };
+    try { await createUserWithEmailAndPassword(auth, idToEmail(id), pw); }
+    catch (err) { pendingSignup = null; const c = err.code || ""; m.textContent = c.includes("email-already") ? "이미 쓰고 있는 아이디예요. 다른 아이디를 정해 주세요." : c.includes("network") ? "인터넷 연결을 확인해 주세요." : "신청하지 못했어요. 다시 시도해 주세요."; }
+  });
+}
+async function waitingView(user) {
+  const loginId = (user.email || "").split("@")[0];
+  if (pendingSignup) {
+    try { await setDoc(doc(fs, "requests", user.uid), Object.assign({}, pendingSignup, { createdAt: new Date().toISOString() })); } catch (e) { console.error(e); }
+    pendingSignup = null;
+  }
+  let r = null; try { r = await getDoc(doc(fs, "requests", user.uid)); } catch (e) {}
+  $("#bnav").hidden = true;
+  $("#hdrRight").innerHTML = `<button class="ghost sm" data-act="logout">로그아웃</button>`;
+  if (r && r.exists()) {
+    $("#app").innerHTML = `<div class="login">
+      <div class="login-mark"><img src="icon-192.png" alt="" width="72" height="72"></div>
+      <h1>승인 기다리는 중</h1>
+      <p class="muted">${esc(r.data().name)}님의 가입 신청이 접수됐어요. 코치님이 승인하면 이 화면이 자동으로 바뀌어요.</p>
+      <p class="muted" style="font-size:13px">아이디 <span class="num">${esc(loginId)}</span></p>
+    </div>`;
+  } else {
+    $("#app").innerHTML = `<div class="login">
+      <h1>가입 신청이 필요해요</h1>
+      <p class="muted">아직 코치님 승인을 받지 않은 아이디예요. 이름을 적어 신청해 주세요.</p>
+      <form id="rqForm" class="stack">
+        <label class="f" for="rq-name">이름<input id="rq-name" required maxlength="20"></label>
+        <label class="f" for="rq-goal">운동 목표 (선택)<input id="rq-goal" maxlength="40"></label>
+        <button class="pri" type="submit">가입 신청</button>
+      </form>
+    </div>`;
+    $("#rqForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      pendingSignup = { name: $("#rq-name").value.trim(), goal: $("#rq-goal").value.trim(), loginId };
+      if (!pendingSignup.name) return;
+      waitingView(user);
+    });
+  }
+  listen(doc(fs, "users", user.uid), d => { if (d.exists()) location.reload(); });
 }
 
 const LS = {};
@@ -107,7 +177,7 @@ function openDetail(mid) {
 
 onAuthStateChanged(auth, async user => {
   stopListening();
-  Object.assign(S, { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [] });
+  Object.assign(S, { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [] });
   me = null;
   if (!user) return loginView();
   $("#app").innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`;
@@ -117,6 +187,7 @@ onAuthStateChanged(auth, async user => {
     listenQ("g-sessions", "sessions", query(collection(fs, "sessions"), where("date", ">=", daysAgo(60))));
     listenQ("g-meals", "meals", query(collection(fs, "meals"), where("date", ">=", daysAgo(14))));
     listenQ("g-workouts", "workouts", query(collection(fs, "workouts"), where("date", ">=", daysAgo(30))));
+    listenQ("g-requests", "requests", collection(fs, "requests"));
     if (ui.coachMember) openDetail(ui.coachMember);
     listen(collection(fs, "coachNotes"), s => { S.notes = {}; s.docs.forEach(d => S.notes[d.id] = d.data()); });
     render();
@@ -124,7 +195,7 @@ onAuthStateChanged(auth, async user => {
   }
   let u;
   try { u = await getDoc(doc(fs, "users", user.uid)); } catch (e) { u = null; }
-  if (!u || !u.exists()) { await signOut(auth); return loginView("등록되지 않은 계정이에요. 코치님께 문의해 주세요."); }
+  if (!u || !u.exists()) return waitingView(user);
   const mid = u.data().memberId;
   me = { role: "member", memberId: mid };
   listen(doc(fs, "members", mid), d => { S.members = d.exists() ? [Object.assign({ id: d.id }, d.data())] : []; render(); });
@@ -167,6 +238,7 @@ function coachHome() {
   const order = x => (x.s.unreadFb ? 4 : 0) + (x.s.uncommented ? 2 : 0) + ((x.s.mealGap ?? 9) >= 2 ? 1 : 0);
   sts.sort((a, b) => order(b) - order(a) || a.m.name.localeCompare(b.m.name, "ko"));
   const ended = S.members.filter(m => m.status === "ended");
+  const reqs = by(S.requests, "createdAt", 1);
   return `
   <div class="section">
     <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
@@ -177,6 +249,14 @@ function coachHome() {
       <div class="stat"><b>${weekSess}</b><span>최근 7일 수업</span></div>
     </div>
   </div>
+  ${reqs.length ? `<div class="section">
+    <div class="row between"><h2>가입 신청</h2><span class="chip new">${reqs.length}명 대기</span></div>
+    <div class="roster">${reqs.map(r => `<div class="mem">
+      <span class="av">${esc((r.name || "?").slice(0, 1))}</span>
+      <span style="min-width:0"><span class="nm">${esc(r.name)}</span> <span class="sub">${esc(r.goal || "")}</span>
+        <span class="sub" style="display:block">아이디 <span class="num">${esc(r.loginId)}</span>${r.createdAt ? " · " + fmtD(r.createdAt.slice(0, 10)) + " 신청" : ""}</span></span>
+      <span class="row" style="flex-wrap:nowrap"><button class="sm ghost" data-act="rejectReq" data-id="${esc(r.id)}">거절</button><button class="sm pri" data-act="approveReq" data-id="${esc(r.id)}">승인</button></span>
+    </div>`).join("")}</div></div>` : ""}
   <div class="section">
     <div class="row between"><h2>회원 목록</h2><span class="muted" style="font-size:13px">확인할 게 많은 순</span></div>
     ${sts.length ? `<div class="roster">${sts.map(({ m, s }) => {
@@ -510,6 +590,19 @@ document.addEventListener("click", async e => {
   if (a === "closeScrim") { if (e.target === b) closeSheet(); return; }
   if (a === "close") return closeSheet();
   if (a === "settings") return settingsSheet();
+  if (a === "approveReq") {
+    const r = S.requests.find(x => x.id === id); if (!r) return;
+    b.disabled = true; const mid = uid();
+    const ok = await create("members", mid, { name: r.name, goal: r.goal || "", start: today(), status: "active", loginId: r.loginId, uid: id, shared: false, bodySummary: null })
+      && await create("users", id, { memberId: mid, loginId: r.loginId });
+    if (ok) { await del("requests", id); toast(`${r.name}님을 승인했어요`); } else b.disabled = false;
+    return;
+  }
+  if (a === "rejectReq") {
+    if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = "정말 거절"; b.style.color = "var(--bad)"; return; }
+    if (await del("requests", id)) toast("신청을 거절했어요");
+    return;
+  }
   if (a === "logout") { closeSheet(); ui = { coachMember: null, tab: "sessions", mtab: "home" }; saveUi(); return signOut(auth); }
   if (a === "changePw") {
     const o = $("#st-old").value, n = $("#st-new").value, msg = $("#st-msg");
