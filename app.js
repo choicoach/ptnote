@@ -239,6 +239,7 @@ function coachHome() {
   sts.sort((a, b) => order(b) - order(a) || a.m.name.localeCompare(b.m.name, "ko"));
   const ended = S.members.filter(m => m.status === "ended");
   const reqs = by(S.requests, "createdAt", 1);
+  const unlinked = S.members.filter(m => !m.uid && m.status !== "ended");
   return `
   <div class="section">
     <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
@@ -256,6 +257,8 @@ function coachHome() {
       <span style="min-width:0"><span class="nm">${esc(r.name)}</span> <span class="sub">${esc(r.goal || "")}</span>
         <span class="sub" style="display:block">아이디 <span class="num">${esc(r.loginId)}</span>${r.createdAt ? " · " + fmtD(r.createdAt.slice(0, 10)) + " 신청" : ""}</span></span>
       <span class="row" style="flex-wrap:nowrap"><button class="sm ghost" data-act="rejectReq" data-id="${esc(r.id)}">거절</button><button class="sm pri" data-act="approveReq" data-id="${esc(r.id)}">승인</button></span>
+      ${unlinked.length ? `<label class="f" style="grid-column:2/4" for="lk-${esc(r.id)}">승인할 때 연결
+        <select id="lk-${esc(r.id)}"><option value="">새 회원으로 등록</option>${unlinked.map(m => `<option value="${esc(m.id)}" ${m.name === r.name ? "selected" : ""}>기존 기록과 연결: ${esc(m.name)}</option>`).join("")}</select></label>` : ""}
     </div>`).join("")}</div></div>` : ""}
   <div class="section">
     <div class="row between"><h2>회원 목록</h2><span class="muted" style="font-size:13px">확인할 게 많은 순</span></div>
@@ -560,6 +563,36 @@ function workoutSheet(w) {
   <label class="f" for="fw-note">메모<textarea id="fw-note" placeholder="러닝 30분, 컨디션, 불편했던 부위 등">${esc(w.note || "")}</textarea></label>
   <div class="row">${w.id ? `<button class="ghost" data-act="delWorkout" data-id="${esc(w.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveWorkout" data-id="${esc(w.id || "")}" style="flex:2">저장</button></div>`);
 }
+async function runImport(file, msg) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch (e) { msg.textContent = "파일을 읽을 수 없어요. 받은 가져오기 파일이 맞는지 확인해 주세요."; return; }
+  const list = (data && data.members) || [];
+  if (!list.length) { msg.textContent = "파일에 회원 자료가 없어요."; return; }
+  const sid = s => String(s).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40) || uid();
+  let n = 0, fail = 0;
+  const step = async (ok) => { n++; if (!ok) fail++; msg.textContent = `옮기는 중… ${n}건`; };
+  for (const m of list) {
+    const mid = "imp-" + sid(m.key || m.name);
+    const base = { name: m.name, goal: m.goal || "", start: m.start || today(), status: m.status || "active" };
+    if (find("members", mid)) await step(await patch("members", mid, base));
+    else await step(await create("members", mid, Object.assign(base, { shared: false, bodySummary: null })));
+    if (m.memo) await step(await create("coachNotes", mid, { memo: m.memo }));
+    for (const [i, x] of (m.sessions || []).entries())
+      await step(await create("sessions", `${mid}-s${i}`, { memberId: mid, date: x.date, exercises: x.exercises || [], coachFb: x.coachFb || "", memberFb: x.memberFb || "", fbSeen: true }));
+    for (const [i, x] of (m.meals || []).entries()) {
+      const id = `${mid}-m${i}`;
+      if (x.full) await step(await create("photos", id, { memberId: mid, date: x.date, data: x.full }));
+      await step(await create("meals", id, { memberId: mid, date: x.date, type: x.type || "식사", memo: x.memo || "", thumb: x.thumb || null, hasPhoto: !!x.full, coachComment: x.coachComment || "", seen: true }));
+    }
+    for (const [i, x] of (m.body || []).entries())
+      await step(await create("body", `${mid}-b${i}`, { memberId: mid, date: x.date, weight: x.weight ?? null, smm: x.smm ?? null, fat: x.fat ?? null, pbf: x.pbf ?? null }));
+    for (const [i, x] of (m.workouts || []).entries())
+      await step(await create("workouts", `${mid}-w${i}`, { memberId: mid, date: x.date, minutes: x.minutes || "", exercises: x.exercises || [], note: x.note || "" }));
+    const b = (m.body || []).filter(x => x.weight != null || x.smm != null).sort((a, c) => a.date < c.date ? -1 : 1);
+    if (b.length) await patch("members", mid, { bodySummary: { fw: b[0].weight ?? null, lw: b[b.length - 1].weight ?? null, fs: b[0].smm ?? null, ls: b[b.length - 1].smm ?? null, n: b.length } });
+  }
+  msg.textContent = fail ? `${n - fail}건을 옮겼고 ${fail}건은 실패했어요. 파일을 한 번 더 올려 주세요.` : `회원 ${list.length}명, 기록 ${n}건을 옮겼어요.`;
+}
 function settingsSheet() {
   openSheet(`<div class="row between"><h2>설정</h2><button class="ghost sm" data-act="close">닫기</button></div>
   <div class="muted" style="font-size:13px">로그인 아이디 <span class="num">${esc((auth.currentUser?.email || "").split("@")[0])}</span></div>
@@ -572,7 +605,11 @@ function settingsSheet() {
   <div class="muted" style="font-size:13px">식사 원본 사진이 저장 공간 대부분을 차지해요. 오래된 원본을 지워도 목록의 작은 사진과 메모, 코멘트는 남아요.</div>
   <div class="row"><select id="st-days" style="width:auto"><option value="90">90일 지난 사진</option><option value="180" selected>180일 지난 사진</option><option value="365">1년 지난 사진</option></select>
   <button data-act="cleanPhotos">오래된 원본 사진 정리</button></div>
-  <div id="st-clean" class="muted" style="font-size:13px"></div>` : ""}
+  <div id="st-clean" class="muted" style="font-size:13px"></div>
+  <h3>자료 가져오기</h3>
+  <div class="muted" style="font-size:13px">구글시트에서 옮긴 가져오기 파일(.json)을 올리면 회원, 수업일지, 피드백, 식단 사진이 한꺼번에 들어가요. 같은 파일을 두 번 올려도 기록이 겹치지 않아요.</div>
+  <input type="file" id="st-import" accept=".json,application/json" aria-label="가져오기 파일">
+  <div id="st-imp-msg" class="muted" style="font-size:13px"></div>` : ""}
   <button class="ghost" data-act="logout">로그아웃</button>`);
 }
 const numOrNull = v => { v = String(v).trim().replace(",", "."); return v === "" || isNaN(+v) ? null : +v; };
@@ -592,8 +629,12 @@ document.addEventListener("click", async e => {
   if (a === "settings") return settingsSheet();
   if (a === "approveReq") {
     const r = S.requests.find(x => x.id === id); if (!r) return;
-    b.disabled = true; const mid = uid();
-    const ok = await create("members", mid, { name: r.name, goal: r.goal || "", start: today(), status: "active", loginId: r.loginId, uid: id, shared: false, bodySummary: null })
+    b.disabled = true;
+    const link = document.getElementById("lk-" + id)?.value || "";
+    const mid = link || uid();
+    const ok = (link
+        ? await patch("members", mid, Object.assign({ loginId: r.loginId, uid: id }, r.goal && !find("members", mid)?.goal ? { goal: r.goal } : {}))
+        : await create("members", mid, { name: r.name, goal: r.goal || "", start: today(), status: "active", loginId: r.loginId, uid: id, shared: false, bodySummary: null }))
       && await create("users", id, { memberId: mid, loginId: r.loginId });
     if (ok) { await del("requests", id); toast(`${r.name}님을 승인했어요`); } else b.disabled = false;
     return;
@@ -730,6 +771,7 @@ document.addEventListener("click", async e => {
   if (a === "saveWComment") { if (await patch("workouts", id, { coachComment: $("#wc-" + id).value.trim() })) toast("코멘트를 남겼어요"); return; }
 });
 document.addEventListener("change", async e => {
+  if (e.target.id === "st-import" && e.target.files[0]) { e.target.disabled = true; await runImport(e.target.files[0], $("#st-imp-msg")); e.target.disabled = false; e.target.value = ""; return; }
   if (e.target.id === "shareToggle") {
     const mid = me.memberId;
     if (await patch("members", mid, { shared: e.target.checked, bodySummary: bodySummaryFor(mid) })) toast(e.target.checked ? "체성분 변화를 공개했어요" : "공개를 껐어요");
