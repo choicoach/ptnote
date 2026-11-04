@@ -49,6 +49,12 @@ service cloud.firestore {
       allow create: if isCoach() || owns(request.resource.data.memberId);
       allow update: if isCoach() || (owns(resource.data.memberId) && sameMember());
     }
+    match /bookings/{id} {
+      allow read: if isCoach() || owns(resource.data.memberId);
+      allow create: if isCoach() || (owns(request.resource.data.memberId) && request.resource.data.status == 'requested');
+      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember() && onlyKeys(['cancelReq', 'updatedAt']));
+      allow delete: if isCoach() || (owns(resource.data.memberId) && resource.data.status == 'requested');
+    }
     match /body/{id} {
       allow read, delete: if isCoach() || owns(resource.data.memberId);
       allow create: if isCoach() || owns(request.resource.data.memberId);

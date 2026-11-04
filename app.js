@@ -9,7 +9,7 @@ let fs;
 try { fs = initializeFirestore(app, { localCache: persistentLocalCache() }); } catch (e) { fs = initializeFirestore(app, {}); }
 
 const COLS = ["sessions", "meals", "body", "workouts"];
-const S = { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [] };
+const S = { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [], bookings: [] };
 let pendingSignup = null;
 let me = null; // {role:'coach'} | {role:'member', memberId}
 let unsubs = [];
@@ -192,7 +192,7 @@ function openDetail(mid) {
 
 onAuthStateChanged(auth, async user => {
   stopListening();
-  Object.assign(S, { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [] });
+  Object.assign(S, { members: [], sessions: [], meals: [], body: [], workouts: [], notes: {}, peers: [], requests: [], bookings: [] });
   me = null;
   if (!user) return loginView();
   $("#app").innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`;
@@ -203,6 +203,7 @@ onAuthStateChanged(auth, async user => {
     listenQ("g-meals", "meals", query(collection(fs, "meals"), where("date", ">=", daysAgo(14))));
     listenQ("g-workouts", "workouts", query(collection(fs, "workouts"), where("date", ">=", daysAgo(30))));
     listenQ("g-requests", "requests", collection(fs, "requests"));
+    listenQ("g-bookings", "bookings", query(collection(fs, "bookings"), where("date", ">=", daysAgo(35))));
     if (ui.coachMember) openDetail(ui.coachMember);
     listen(collection(fs, "coachNotes"), s => { S.notes = {}; s.docs.forEach(d => S.notes[d.id] = d.data()); });
     render();
@@ -216,6 +217,7 @@ onAuthStateChanged(auth, async user => {
   listen(doc(fs, "members", mid), d => { S.members = d.exists() ? [Object.assign({ id: d.id }, d.data())] : []; render(); });
   listen(query(collection(fs, "members"), where("shared", "==", true)), s => { S.peers = rows(s).filter(x => x.id !== mid); render(); });
   COLS.forEach(c => listen(query(collection(fs, c), where("memberId", "==", mid)), s => { S[c] = rows(s); render(); }));
+  listen(query(collection(fs, "bookings"), where("memberId", "==", mid)), s => { S.bookings = rows(s); render(); });
   render();
 });
 
@@ -255,7 +257,7 @@ function coachHome() {
   const ended = S.members.filter(m => m.status === "ended");
   const reqs = by(S.requests, "createdAt", 1);
   const unlinked = S.members.filter(m => !m.uid && m.status !== "ended");
-  return `
+  return `${viewSwitch()}
   <div class="section">
     <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
     <button class="pri" data-act="newMember">+ 회원 등록</button></div>
@@ -284,6 +286,7 @@ function coachHome() {
       if (s.lastMeal == null) chips.push(`<span class="chip">최근 2주 식단 없음</span>`);
       else if (s.mealGap >= 2) chips.push(`<span class="chip bad">식단 ${s.mealGap}일째 없음</span>`);
       if (m.shared) chips.push(`<span class="chip ok">기록 공개</span>`);
+      const nb = nextBooking(m.id); if (nb) chips.push(`<span class="chip">다음 수업 ${shortD(nb.date)} ${esc(nb.start)}</span>`);
       const tr = s.wDelta == null ? (s.lastW ? `<div class="num">${s.lastW}kg</div>` : "") : `<div class="num">${s.lastW}kg</div><div class="${s.wDelta > 0 ? "up" : "down"}">${s.wDelta > 0 ? "+" : ""}${s.wDelta.toFixed(1)}</div>`;
       return `<button class="mem" data-act="openMember" data-id="${esc(m.id)}">
         <span class="av">${esc((m.name || "?").slice(0, 1))}</span>
@@ -412,6 +415,7 @@ function memberHome(m) {
   return `<div class="section"><div class="eyebrow">${fmtD(today())}</div><h1>${esc(m.name)}님, 안녕하세요</h1>
   <div class="muted">${esc(m.goal || "")}</div></div>
   ${coachProfile ? `<div class="section">${coachCard(coachProfile)}</div>` : ""}
+  ${memberSchedule(m)}
   <div class="section"><div class="stats">
     <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
     <div class="stat"><b>${s.lastW ?? "-"}</b><span>최근 체중 kg</span></div>
@@ -439,6 +443,88 @@ function renderBnav() {
   $("#bnavIn").innerHTML = t.map(([k, l]) => `<button data-act="mtab" data-k="${k}" aria-selected="${ui.mtab === k || (ui.mtab === "sessions" && k === "home")}">${ICONS[k]}${l}</button>`).join("");
 }
 
+/* ---------- schedule ---------- */
+const BST = { requested: ["요청", "warn"], confirmed: ["확정", "ok"], done: ["완료", ""], cancelled: ["취소", "bad"] };
+const shortD = d => { const [, m, dd] = d.split("-"); return `${+m}/${+dd}`; };
+const toMin = t => { const [h, m] = (t || "0:0").split(":").map(Number); return h * 60 + m; };
+const endT = b => { const e = toMin(b.start) + (+b.minutes || 50); return `${String(Math.floor(e / 60) % 24).padStart(2, "0")}:${String(e % 60).padStart(2, "0")}`; };
+const nowKey = () => today() + " " + new Date().toTimeString().slice(0, 5);
+function nextBooking(mid) {
+  return by(S.bookings.filter(b => b.memberId === mid && b.status === "confirmed" && (b.date + " " + b.start) >= nowKey()).map(b => Object.assign({ k: b.date + b.start }, b)), "k", 1)[0];
+}
+function overlaps(b, exceptId) {
+  const s0 = toMin(b.start), e0 = s0 + (+b.minutes || 50);
+  return S.bookings.filter(x => x.id !== exceptId && x.date === b.date && (x.status === "confirmed") && toMin(x.start) < e0 && s0 < toMin(x.start) + (+x.minutes || 50));
+}
+const memName = id => (S.members.find(m => m.id === id) || {}).name || "회원";
+function viewSwitch() {
+  const pend = S.bookings.filter(b => b.status === "requested" || (b.cancelReq && b.status === "confirmed")).length;
+  return `<div class="section"><div class="tabs" role="tablist">
+    <button role="tab" aria-selected="${ui.coachView !== "schedule"}" data-act="cview" data-k="members">회원</button>
+    <button role="tab" aria-selected="${ui.coachView === "schedule"}" data-act="cview" data-k="schedule">일정${pend ? ` <span class="chip new">${pend}</span>` : ""}</button>
+  </div></div>`;
+}
+function weekStart(d) { const x = new Date(d + "T00:00:00"); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); return x; }
+const iso = x => new Date(x - x.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+function bookingRow(b, coach) {
+  const [lab, cls] = BST[b.status] || ["", ""];
+  const acts = [];
+  if (coach) {
+    if (b.status === "requested") acts.push(`<button class="sm pri" data-act="bkConfirm" data-id="${esc(b.id)}">확정</button>`);
+    if (b.status === "confirmed") acts.push(`<button class="sm" data-act="bkDone" data-id="${esc(b.id)}">수업 기록</button>`);
+    acts.push(`<button class="sm ghost" data-act="bkEdit" data-id="${esc(b.id)}">수정</button>`);
+  } else {
+    if (b.status === "confirmed" && !b.cancelReq && (b.date + " " + b.start) >= nowKey()) acts.push(`<button class="sm ghost" data-act="bkCancelReq" data-id="${esc(b.id)}">취소 요청</button>`);
+    if (b.status === "requested") acts.push(`<button class="sm ghost" data-act="bkWithdraw" data-id="${esc(b.id)}">요청 취소</button>`);
+  }
+  return `<div class="bk ${b.status}">
+    <div class="bk-t num"><b>${esc(b.start)}</b><span>${esc(endT(b))}</span></div>
+    <div style="min-width:0"><div class="row"><b>${coach ? esc(memName(b.memberId)) : fmtD(b.date)}</b><span class="chip ${cls}">${lab}</span>${b.cancelReq && b.status === "confirmed" ? `<span class="chip bad">취소 요청</span>` : ""}</div>
+      ${b.note ? `<div class="muted" style="font-size:13px">${esc(b.note)}</div>` : ""}</div>
+    <div class="row" style="justify-content:flex-end">${acts.join("")}</div></div>`;
+}
+function coachSchedule() {
+  const sel = ui.schedDay || today();
+  const ws = weekStart(sel);
+  const days = [...Array(7)].map((_, i) => { const x = new Date(ws); x.setDate(ws.getDate() + i); return iso(x); });
+  const live = S.bookings.filter(b => b.status !== "cancelled");
+  const pending = by(S.bookings.filter(b => b.status === "requested" || (b.cancelReq && b.status === "confirmed")).map(b => Object.assign({ k: b.date + b.start }, b)), "k", 1);
+  const list = by(S.bookings.filter(b => b.date === sel).map(b => Object.assign({ k: b.start }, b)), "k", 1);
+  const conf = list.filter(b => b.status === "confirmed" || b.status === "done");
+  return `${viewSwitch()}
+  ${pending.length ? `<div class="section"><h2>확인할 요청</h2><div class="stack" style="gap:8px">${pending.map(b => `<div class="card">${bookingRow(b, true).replace('<div class="bk', '<div class="bk flat').replace(`<b>${esc(memName(b.memberId))}</b>`, `<b>${esc(memName(b.memberId))}</b> <span class="muted num">${shortD(b.date)}</span>`)}
+    ${b.cancelReq && b.status === "confirmed" ? `<div class="row" style="justify-content:flex-end;margin-top:6px"><button class="sm ghost" data-act="bkKeep" data-id="${esc(b.id)}">취소 거절</button><button class="sm" data-act="bkCancel" data-id="${esc(b.id)}" style="color:var(--bad)">취소 승인</button></div>` : ""}</div>`).join("")}</div></div>` : ""}
+  <div class="section">
+    <div class="row between"><h2 class="num">${shortD(days[0])} ~ ${shortD(days[6])}</h2>
+      <div class="row"><button class="sm ghost" data-act="wk" data-k="-7" aria-label="이전 주">‹</button><button class="sm ghost" data-act="wk" data-k="0">오늘</button><button class="sm ghost" data-act="wk" data-k="7" aria-label="다음 주">›</button></div></div>
+    <div class="week">${days.map(d => { const n = live.filter(b => b.date === d).length; const dt = new Date(d + "T00:00:00");
+      return `<button class="wd${d === sel ? " on" : ""}${d === today() ? " today" : ""}" data-act="pickDay" data-k="${d}"><span>${"일월화수목금토"[dt.getDay()]}</span><b class="num">${dt.getDate()}</b><i>${n ? n + "건" : ""}</i></button>`; }).join("")}</div>
+  </div>
+  <div class="section">
+    <div class="row between"><h2>${fmtD(sel)} 수업 ${conf.length}건</h2><button class="pri sm" data-act="bkNew">+ 예약 추가</button></div>
+    ${list.length ? `<div class="roster">${list.map(b => bookingRow(b, true)).join("")}</div>` : `<div class="empty">이 날은 예약이 없어요. <b>예약 추가</b>로 수업을 잡아 보세요.</div>`}
+  </div>`;
+}
+function memberSchedule(m) {
+  const up = by(S.bookings.filter(b => b.status !== "cancelled" && b.status !== "done" && (b.date + " " + b.start) >= nowKey()).map(b => Object.assign({ k: b.date + b.start }, b)), "k", 1).slice(0, 5);
+  const nb = up.find(b => b.status === "confirmed");
+  return `<div class="section"><div class="row between"><h2>수업 일정</h2><button class="sm" data-act="bkRequest">예약 요청</button></div>
+    ${nb ? `<div class="banner"><b>다음 수업</b> ${fmtD(nb.date)} ${esc(nb.start)}~${esc(endT(nb))}</div>` : ""}
+    ${up.length ? `<div class="roster">${up.map(b => bookingRow(b, false)).join("")}</div>` : `<div class="empty">잡힌 수업이 없어요. 원하는 날짜와 시간으로 <b>예약 요청</b>을 보내 보세요.</div>`}</div>`;
+}
+function bookingSheet(b, asMember) {
+  b = b || {};
+  const act = by(S.members.filter(m => m.status !== "ended"), "name", 1);
+  openSheet(`<h2>${asMember ? "수업 예약 요청" : b.id ? "예약 수정" : "예약 추가"}</h2>
+  ${asMember ? `<div class="muted" style="font-size:13px">원하는 시간으로 요청하면 코치님이 확정해 드려요.</div>` : `<label class="f" for="bk-mem">회원<select id="bk-mem">${act.map(m => `<option value="${esc(m.id)}" ${m.id === (b.memberId || ui.coachMember) ? "selected" : ""}>${esc(m.name)}</option>`).join("")}</select></label>`}
+  <div class="grid2"><label class="f" for="bk-date">날짜<input type="date" id="bk-date" value="${esc(b.date || ui.schedDay || today())}"></label>
+  <label class="f" for="bk-start">시작 시간<input type="time" id="bk-start" step="600" value="${esc(b.start || "19:00")}"></label></div>
+  ${asMember ? "" : `<label class="f" for="bk-min">수업 시간<select id="bk-min">${[30, 50, 60, 90].map(n => `<option value="${n}" ${(+b.minutes || 50) === n ? "selected" : ""}>${n}분</option>`).join("")}</select></label>`}
+  <label class="f" for="bk-note">메모<input id="bk-note" maxlength="60" value="${esc(b.note || "")}" placeholder="${asMember ? "예: 이 시간이 안 되면 20시도 괜찮아요" : "예: 하체, 인바디 측정"}"></label>
+  <div id="bk-msg" class="muted" style="font-size:13px"></div>
+  <div class="row">${b.id && !asMember ? `<button class="ghost" data-act="bkCancel" data-id="${esc(b.id)}" style="color:var(--bad)">예약 취소</button>` : ""}<button class="ghost" data-act="close" style="flex:1">닫기</button><button class="pri" data-act="${asMember ? "bkSendReq" : "bkSave"}" data-id="${esc(b.id || "")}" style="flex:2">${asMember ? "요청 보내기" : "저장"}</button></div>`);
+}
+
 /* ---------- render ---------- */
 function render() {
   if (!me) return;
@@ -450,7 +536,7 @@ function render() {
     app.innerHTML = ui.mtab === "home" ? memberHome(m) : `<div class="section">${tabBody(m, ui.mtab, false)}</div>`;
   } else {
     const m = ui.coachMember && S.members.find(x => x.id === ui.coachMember);
-    app.innerHTML = m ? coachMember(m) : coachHome();
+    app.innerHTML = m ? coachMember(m) : (ui.coachView === "schedule" ? coachSchedule() : coachHome());
   }
   renderBnav();
 }
@@ -801,6 +887,41 @@ document.addEventListener("click", async e => {
     return;
   }
   if (a === "newSession") return sessionSheet();
+  if (a === "cview") { ui.coachView = b.dataset.k; saveUi(); render(); return window.scrollTo(0, 0); }
+  if (a === "pickDay") { ui.schedDay = b.dataset.k; saveUi(); return render(); }
+  if (a === "wk") { const k = +b.dataset.k; if (!k) ui.schedDay = today(); else { const x = new Date((ui.schedDay || today()) + "T00:00:00"); x.setDate(x.getDate() + k); ui.schedDay = iso(x); } saveUi(); return render(); }
+  if (a === "bkNew") return bookingSheet();
+  if (a === "bkEdit") return bookingSheet(find("bookings", id));
+  if (a === "bkRequest") return bookingSheet(null, true);
+  if (a === "bkSave" || a === "bkSendReq") {
+    const asM = a === "bkSendReq", msg = $("#bk-msg");
+    const data = { memberId: asM ? me.memberId : $("#bk-mem").value, date: $("#bk-date").value, start: $("#bk-start").value, minutes: asM ? 50 : +$("#bk-min").value, note: $("#bk-note").value.trim() };
+    if (!data.memberId || !data.date || !data.start) { msg.textContent = "날짜와 시간을 정해 주세요."; return; }
+    if (!asM) {
+      const clash = overlaps(data, id);
+      if (clash.length && !b.dataset.confirm) { b.dataset.confirm = 1; msg.innerHTML = `<span style="color:var(--bad)">${esc(clash.map(c => memName(c.memberId) + " " + c.start).join(", "))} 수업과 시간이 겹쳐요.</span> 그래도 저장하려면 한 번 더 누르세요.`; return; }
+    }
+    b.disabled = true;
+    const ok = asM ? await create("bookings", uid(), Object.assign(data, { status: "requested", by: "member" }))
+      : id ? await patch("bookings", id, data) : await create("bookings", uid(), Object.assign(data, { status: "confirmed", by: "coach" }));
+    b.disabled = false; if (ok) { closeSheet(); toast(asM ? "예약 요청을 보냈어요" : "예약을 저장했어요"); }
+    return;
+  }
+  if (a === "bkConfirm") {
+    const x = find("bookings", id); const clash = overlaps(x, id);
+    if (clash.length && !b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = "겹침 · 그래도 확정"; toast(`${clash.map(c => memName(c.memberId) + " " + c.start).join(", ")} 수업과 겹쳐요`); return; }
+    if (await patch("bookings", id, { status: "confirmed" })) toast("예약을 확정했어요"); return;
+  }
+  if (a === "bkCancel") { if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = "정말 취소"; return; } if (await patch("bookings", id, { status: "cancelled", cancelReq: false })) { closeSheet(); toast("예약을 취소했어요"); } return; }
+  if (a === "bkKeep") { if (await patch("bookings", id, { cancelReq: false })) toast("취소 요청을 거절했어요"); return; }
+  if (a === "bkCancelReq") { if (!b.dataset.confirm) { b.dataset.confirm = 1; b.textContent = "정말 취소 요청"; return; } if (await patch("bookings", id, { cancelReq: true })) toast("코치님께 취소 요청을 보냈어요"); return; }
+  if (a === "bkWithdraw") { if (await del("bookings", id)) toast("요청을 취소했어요"); return; }
+  if (a === "bkDone") {
+    const x = find("bookings", id); if (!x) return;
+    await patch("bookings", id, { status: "done" });
+    ui.coachMember = x.memberId; ui.tab = "sessions"; saveUi(); openDetail(x.memberId); render();
+    return sessionSheet({ date: x.date });
+  }
   if (a === "editSession") return sessionSheet(find("sessions", id));
   if (a === "addEx") { $("#exRows").insertAdjacentHTML("beforeend", exRowsHtml([{}])); $("#exRows").lastElementChild.querySelector(".ex-n").focus(); return; }
   if (a === "rmEx") { const r = document.querySelectorAll("#exRows .ex-row"); if (r.length > 1) b.closest(".ex-row").remove(); else b.closest(".ex-row").querySelectorAll("input").forEach(i => i.value = ""); return; }
