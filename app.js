@@ -1,7 +1,7 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, COACH_ID, ID_DOMAIN } from "./config.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
+import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
+import { firebaseConfig, COACH_ID, ID_DOMAIN, AI_MODELS } from "./config.js";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -108,6 +108,7 @@ function signupView() {
   $("#app").innerHTML = `<div class="login">
     <h1>가입 신청</h1>
     <p class="muted">신청하면 코치님이 확인 후 승인해요. 승인되면 바로 앱을 쓸 수 있어요.</p>
+    <p class="muted" style="font-size:12px">안내: 식단 사진은 영양 분석을 위해 외부 AI 서비스(Google Gemini)로 보내질 수 있어요. 얼굴이나 다른 사람이 나오지 않게 음식만 찍어 주세요.</p>
     <form id="suForm" class="stack">
       <label class="f" for="su-name">이름<input id="su-name" required maxlength="20" placeholder="예: 송재민"></label>
       <label class="f" for="su-id">사용할 아이디 (영문 소문자·숫자 3~20자)<input id="su-id" required autocapitalize="off" spellcheck="false" autocomplete="username" placeholder="예: jaemin"></label>
@@ -341,7 +342,7 @@ function mealsView(m, coach) {
   ${!coach ? `<div class="muted" style="font-size:13px">물 이외에 먹은 것은 모두 사진으로 남겨 주세요. 식사 전에 찍어 두고 저녁에 한 번에 올려도 괜찮아요.</div>` : ""}
   ${days.length ? days.map(d => {
     const items = meals.filter(x => x.date === d).sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
-    return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted" style="font-size:13px">${items.length}끼</span></div>
+    return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted num" style="font-size:13px">${(() => { const t = items.filter(i => i.nutrition?.total); if (!t.length) return items.length + "끼"; const k = t.reduce((a, i) => a + (i.nutrition.total.adjKcal || i.nutrition.total.kcal || 0), 0), pr = t.reduce((a, i) => a + (i.nutrition.total.protein || 0), 0); return `${items.length}끼 · 약 ${Math.round(k).toLocaleString()}kcal · 단백질 ${Math.round(pr)}g${t.length < items.length ? " (일부)" : ""}`; })()}</span></div>
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
       ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
       ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
@@ -541,7 +542,8 @@ function mealSheet(x) {
     openSheet(`<div class="row between"><h2>${fmtD(x.date)} ${esc(x.type)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
     ${shown ? `<img id="meal-big" class="big-img" src="${shown}" alt="식사 사진">` : ""}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
-    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
+    ${shown ? `<div class="row between"><span class="muted" style="font-size:13px">사진으로 칼로리·탄단지를 추정해 코멘트에 채워요</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="8" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
     <div class="row"><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">코멘트 저장</button></div>`);
     showFull(x, "#meal-big");
     return;
@@ -617,6 +619,46 @@ async function runImport(file, msg) {
   msg.textContent = fail ? `${n - fail}건을 옮겼고 ${fail}건은 실패했어요. 파일을 한 번 더 올려 주세요.` : `회원 ${list.length}명, 기록 ${n}건을 옮겼어요.`;
 }
 let pendingProfilePhoto = null;
+let pendingNutrition = null, aiMod = null;
+const r1 = v => Math.round((+v || 0) * 10) / 10;
+async function analyzeMeal(src, memo, type) {
+  if (!aiMod) aiMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-ai.js");
+  const ai = aiMod.getAI(app, { backend: new aiMod.GoogleAIBackend() });
+  const b64 = src.split(",")[1], mime = (src.match(/^data:([^;]+)/) || [])[1] || "image/jpeg";
+  const prompt = `당신은 스포츠 영양 코치입니다. 사진 속 한 끼(${type || "식사"}) 식단을 분석하세요.${memo ? ` 회원 메모: "${memo}"` : ""}
+음식마다 이름(한국어), 추정 무게(g), 탄수화물·단백질·지방(g)을 추정하세요. 조리 과정의 기름·소스·드레싱을 반영한 보정 칼로리(adjKcal)도 추정하세요.
+1인분이 아닌 공유 접시라면 사진에서 이 사람이 먹었을 양으로 추정하세요. 음식이 아니면 items를 빈 배열로 두세요.
+아래 JSON만 답하세요:
+{"items":[{"name":"","grams":0,"carbs":0,"protein":0,"fat":0,"adjKcal":0}],"comment":"코치 관점의 한 줄 조언(단백질·채소·조리법 중심)"}`;
+  let last;
+  for (const name of AI_MODELS) {
+    try {
+      const model = aiMod.getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", temperature: 0.2 } });
+      const res = await model.generateContent([prompt, { inlineData: { data: b64, mimeType: mime } }]);
+      const j = JSON.parse(res.response.text().replace(/^```(json)?|```$/g, "").trim());
+      const items = (j.items || []).map(i => { const c = r1(i.carbs), p = r1(i.protein), f = r1(i.fat), kcal = Math.round(c * 4 + p * 4 + f * 9); return { name: String(i.name || "음식").slice(0, 30), grams: Math.round(+i.grams || 0), carbs: c, protein: p, fat: f, kcal, adjKcal: Math.max(kcal, Math.round(+i.adjKcal || kcal)) }; });
+      const total = items.reduce((t, i) => ({ grams: t.grams + i.grams, carbs: r1(t.carbs + i.carbs), protein: r1(t.protein + i.protein), fat: r1(t.fat + i.fat), kcal: t.kcal + i.kcal, adjKcal: t.adjKcal + i.adjKcal }), { grams: 0, carbs: 0, protein: 0, fat: 0, kcal: 0, adjKcal: 0 });
+      return { items, total, comment: String(j.comment || "").slice(0, 200), model: name, at: new Date().toISOString() };
+    } catch (e) { last = e; const m = String(e && (e.message || e.code) || ""); if (!/not.?found|404|unsupported|not supported/i.test(m)) throw e; }
+  }
+  throw last;
+}
+function nutritionText(r) {
+  if (!r.items.length) return "AI 분석: 사진에서 음식을 찾지 못했어요.";
+  const t = r.total;
+  return ["🍽 AI 식단 분석 (사진 추정치)",
+    ...r.items.map(i => `• ${i.name} ${i.grams}g | 탄 ${i.carbs} · 단 ${i.protein} · 지 ${i.fat}g | ${i.kcal}kcal`),
+    `합계 | 탄 ${t.carbs} · 단 ${t.protein} · 지 ${t.fat}g | ${t.kcal}kcal`,
+    `조리(기름·소스) 반영 시 약 ${t.adjKcal}kcal`,
+    r.comment ? `💬 ${r.comment}` : ""].filter(Boolean).join("\n");
+}
+function aiError(e) {
+  const m = String(e && (e.message || e.code) || "");
+  if (/quota|429|resource.?exhausted|rate/i.test(m)) return "오늘 무료 분석 한도를 다 썼어요. 내일 다시 시도해 주세요.";
+  if (/api.?not.?enabled|has not been used|PERMISSION_DENIED|403|firebasevertexai|firebaseml|AI Logic/i.test(m)) return "Firebase에서 AI Logic(Gemini Developer API)을 켜야 써요. 켠 뒤 몇 분 기다렸다 다시 시도해 주세요.";
+  if (/Failed to fetch|network|import/i.test(m)) return "인터넷 연결을 확인하고 다시 시도해 주세요.";
+  return "분석하지 못했어요. 잠시 후 다시 시도해 주세요.";
+}
 async function squarePhoto(file) {
   const img = await loadImg(file); const n = Math.min(img.width, img.height), size = 360;
   const c = document.createElement("canvas"); c.width = c.height = size;
@@ -799,8 +841,21 @@ document.addEventListener("click", async e => {
     if (confirmDel(b)) { const x = find("meals", id); if (await del("meals", id)) { if (x && x.hasPhoto) { try { await deleteDoc(doc(fs, "photos", id)); } catch (e) {} } closeSheet(); toast("삭제했어요"); } }
     return;
   }
+  if (a === "aiMeal") {
+    const x = find("meals", id), msg = $("#ai-msg"), img = $("#meal-big");
+    if (!x || !img) return;
+    b.disabled = true; msg.textContent = "사진을 분석하는 중… (10~20초)";
+    try {
+      const r = await analyzeMeal(img.src, x.memo, x.type);
+      pendingNutrition = { id, data: r };
+      const ta = $("#fmc"), txt = nutritionText(r);
+      ta.value = ta.value.trim() ? ta.value.trim() + "\n\n" + txt : txt;
+      msg.textContent = "추정치를 채웠어요. 확인하고 고친 뒤 코멘트 저장을 눌러 주세요.";
+    } catch (e) { console.error(e); msg.textContent = aiError(e); }
+    b.disabled = false; return;
+  }
   if (a === "saveMealComment" || a === "markMealSeen") {
-    const p = { seen: true }; if (a === "saveMealComment") p.coachComment = $("#fmc").value.trim();
+    const p = { seen: true }; if (a === "saveMealComment") { p.coachComment = $("#fmc").value.trim(); if (pendingNutrition && pendingNutrition.id === id) p.nutrition = pendingNutrition.data; }
     if (await patch("meals", id, p)) { closeSheet(); toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요"); }
     return;
   }

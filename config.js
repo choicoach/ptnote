@@ -11,3 +11,5 @@ export const firebaseConfig = {
 export const COACH_ID = "choicoach";
 // 아이디를 로그인 이메일로 바꿀 때 쓰는 도메인 (실제 메일 주소 아님)
 export const ID_DOMAIN = "ptnote.app";
+// AI 식단 분석에 쓸 Gemini 모델 (앞에서부터 시도)
+export const AI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"];
