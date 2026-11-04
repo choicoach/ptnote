@@ -476,7 +476,14 @@ function memberSheet(m) {
   <label class="f" for="fm-status">상태<select id="fm-status"><option value="active">진행 중</option><option value="ended" ${m.status === "ended" ? "selected" : ""}>종료</option></select></label></div>
   <label class="f" for="fm-memo">코치 메모 (회원에게 안 보임)<textarea id="fm-memo" placeholder="체형 특이사항, 통증 이력 등">${esc(note)}</textarea></label>
   <div id="fm-msg" class="muted" style="font-size:13px"></div>
-  <div class="row"><button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMember" data-id="${esc(m.id || "")}" style="flex:2">${isNew ? "등록하고 아이디 만들기" : "저장"}</button></div>`);
+  <div class="row"><button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMember" data-id="${esc(m.id || "")}" style="flex:2">${isNew ? "등록하고 아이디 만들기" : "저장"}</button></div>
+  ${isNew ? "" : `<div class="danger-box stack">
+    <b>회원 삭제</b>
+    <div class="muted" style="font-size:13px">수업일지, 피드백, 식단 사진, 체성분, 개인운동 기록이 모두 지워지고 되돌릴 수 없어요. 기록을 남겨 두려면 위 <b>상태</b>를 "종료"로 바꾸세요.</div>
+    <label class="f" for="del-confirm">삭제하려면 회원 이름 <b>${esc(m.name)}</b>을(를) 입력하세요<input id="del-confirm" autocomplete="off"></label>
+    <button class="ghost" data-act="delMember" data-id="${esc(m.id)}" style="color:var(--bad);border-color:var(--bad)">이 회원과 모든 기록 삭제</button>
+    <div id="del-msg" class="muted" style="font-size:13px"></div>
+  </div>`}`);
 }
 async function createMemberAccount(loginId, pw) {
   const sec = initializeApp(firebaseConfig, "sec-" + Date.now());
@@ -706,6 +713,24 @@ document.addEventListener("click", async e => {
   if (a === "mtab") { ui.mtab = b.dataset.k; saveUi(); render(); return window.scrollTo(0, 0); }
   if (a === "newMember") return memberSheet();
   if (a === "editMember") return memberSheet(S.members.find(x => x.id === id));
+  if (a === "delMember") {
+    const m = S.members.find(x => x.id === id); if (!m) return;
+    const msg = $("#del-msg");
+    if ($("#del-confirm").value.trim() !== m.name) { msg.textContent = "이름이 맞지 않아요. 정확히 입력해 주세요."; return; }
+    b.disabled = true; let n = 0, fail = 0;
+    try {
+      for (const c of [...COLS, "photos"]) {
+        const snap = await getDocs(query(collection(fs, c), where("memberId", "==", id)));
+        for (const d of snap.docs) { try { await deleteDoc(d.ref); n++; } catch (e) { fail++; } msg.textContent = `삭제 중… ${n}건`; }
+      }
+      try { await deleteDoc(doc(fs, "coachNotes", id)); } catch (e) {}
+      if (m.uid) { try { await deleteDoc(doc(fs, "users", m.uid)); } catch (e) { fail++; } }
+      if (fail) { msg.textContent = `${fail}건을 지우지 못했어요. 다시 눌러 주세요.`; b.disabled = false; return; }
+      await deleteDoc(doc(fs, "members", id));
+      closeSheet(); ui.coachMember = null; saveUi(); openDetail(null); render(); toast(`${m.name}님과 기록 ${n}건을 삭제했어요`);
+    } catch (e) { console.error(e); msg.textContent = "삭제하지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요."; b.disabled = false; }
+    return;
+  }
   if (a === "saveMember") {
     const name = $("#fm-name").value.trim(); const msg = $("#fm-msg");
     if (!name) { msg.textContent = "이름을 입력해 주세요."; return; }
