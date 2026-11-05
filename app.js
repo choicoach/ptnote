@@ -59,24 +59,20 @@ const prof = () => { const p = Object.assign({}, COACH_DEFAULT, Object.fromEntri
 function coachCard(p, big) {
   p = p || prof();
   if (big) return `<div class="hero">
-    <div class="hero-ph"><img src="${p.photo}" alt="${esc(p.name)} 사진"></div>
+    <img class="hero-poster" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
     <div class="hero-brand">${esc(BRAND)}</div>
-    <div class="hero-nm">${esc(p.name)}${p.tagline ? ` · ${esc(p.tagline)}` : ""}</div>
+    ${p.tagline ? `<div class="hero-nm">${esc(p.name)} · ${esc(p.tagline)}</div>` : ""}
     ${p.intro ? `<div class="coach-intro">${esc(p.intro)}</div>` : ""}
-    <button type="button" class="ghost sm" data-act="coachAbout">코치 이력 보기</button>
   </div>`;
-  return `<button type="button" class="coach-card" data-act="coachAbout">
-    <img class="coach-ph" src="${p.photo}" alt="${esc(p.name)} 사진">
-    <div style="min-width:0;flex:1"><div class="eyebrow">담당 코치</div><div class="coach-nm">${esc(p.name)}</div>
-    <div class="coach-intro">${esc(p.intro || p.tagline || "")}</div></div><span class="muted" aria-hidden="true">›</span></button>`;
+  return `<button type="button" class="ghost about-btn" data-act="coachAbout">담당 코치 ${esc(p.name)} · 이력 보기 ›</button>`;
 }
 function coachAboutSheet() {
   const p = prof();
   openSheet(`<div class="row between"><h2>${esc(BRAND)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
-  <div class="about-top"><img class="coach-ph" src="${p.photo}" alt=""><div><div class="coach-nm">${esc(p.name)}</div><div class="muted">${esc(p.tagline || "")}</div></div></div>
+  <img class="hero-poster" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
+  <div class="hero-brand" style="text-align:center">${esc(BRAND)}</div>
+  ${p.tagline ? `<div class="hero-nm" style="text-align:center">${esc(p.name)} · ${esc(p.tagline)}</div>` : ""}
   ${p.intro ? `<div class="fb">${esc(p.intro)}</div>` : ""}
-  ${p.careers.length ? `<div><div class="eyebrow" style="margin-bottom:6px">자격 · 경력</div><ul class="careers">${p.careers.map(c => `<li>${esc(c.replace(/^[-·•]\s*/, ""))}</li>`).join("")}</ul></div>` : ""}
-  ${p.poster ? `<img class="big-img" src="${p.poster}" alt="${esc(p.name)} 소개 포스터" loading="lazy">` : ""}
   <div class="made-by">이 앱은 ${esc(p.name)}가 회원 관리를 위해 직접 기획하고 만들었어요.</div>`);
 }
 const madeBy = () => `<div class="made-by">${esc(BRAND)} · ${esc(prof().name)}가 직접 만든 회원 관리 앱</div>`;
@@ -780,8 +776,8 @@ function settingsSheet() {
   <button data-act="changePw">비밀번호 바꾸기</button>
   <div id="st-msg" class="muted" style="font-size:13px"></div>
   ${isCoach() ? `<h3>내 프로필 (로그인 화면·회원 홈에 보여요)</h3>
-  <div class="row"><img id="pf-prev" class="coach-ph" ${coachProfile?.photo ? `src="${coachProfile.photo}"` : "hidden"} alt="프로필 미리보기">
-  <label class="f" for="pf-photo" style="flex:1">프로필 사진<input type="file" id="pf-photo" accept="image/*"></label></div>
+  <img id="pf-prev" class="big-img" src="${prof().poster}" alt="소개 이미지 미리보기" style="max-height:260px;object-fit:contain">
+  <label class="f" for="pf-photo">소개 이미지 바꾸기 (포스터·사진 전체가 그대로 보여요)<input type="file" id="pf-photo" accept="image/*"></label>
   <label class="f" for="pf-name">표시 이름<input id="pf-name" maxlength="30" value="${esc(coachProfile?.name || "")}" placeholder="${esc(COACH_DEFAULT.name)}"></label>
   <label class="f" for="pf-intro">소개 (2~3줄)<textarea id="pf-intro" maxlength="200" placeholder="예: 경력 16년 · 체형 분석 기반 PT · 생활스포츠지도사 2급 · KACEP 운동사">${esc(coachProfile?.intro || "")}</textarea></label>
   <label class="f" for="pf-tag">한 줄 소개 (이름 옆에 보여요)<input id="pf-tag" maxlength="40" value="${esc(coachProfile?.tagline || "")}" placeholder="${esc(COACH_DEFAULT.tagline)}"></label>
@@ -834,7 +830,7 @@ document.addEventListener("click", async e => {
   }
   if (a === "logout") { closeSheet(); ui = { coachMember: null, tab: "sessions", mtab: "home" }; saveUi(); return signOut(auth); }
   if (a === "saveProfile") {
-    const data = { name: $("#pf-name").value.trim(), intro: $("#pf-intro").value.trim(), tagline: $("#pf-tag").value.trim(), careers: $("#pf-careers").value.split("\n").map(x => x.trim()).filter(Boolean), photo: pendingProfilePhoto || coachProfile?.photo || null };
+    const data = { name: $("#pf-name").value.trim(), intro: $("#pf-intro").value.trim(), tagline: $("#pf-tag").value.trim(), careers: $("#pf-careers").value.split("\n").map(x => x.trim()).filter(Boolean), poster: pendingProfilePhoto || coachProfile?.poster || null };
     b.disabled = true;
     if (await create("public", "coach", data)) { coachProfile = data; pendingProfilePhoto = null; toast("프로필을 저장했어요"); }
     b.disabled = false; return;
@@ -1031,7 +1027,7 @@ document.addEventListener("click", async e => {
   if (a === "saveWComment") { if (await patch("workouts", id, { coachComment: $("#wc-" + id).value.trim() })) toast("코멘트를 남겼어요"); return; }
 });
 document.addEventListener("change", async e => {
-  if (e.target.id === "pf-photo" && e.target.files[0]) { try { pendingProfilePhoto = await squarePhoto(e.target.files[0]); const p = $("#pf-prev"); p.src = pendingProfilePhoto; p.hidden = false; } catch (err) { toast("사진을 열 수 없어요."); } return; }
+  if (e.target.id === "pf-photo" && e.target.files[0]) { try { pendingProfilePhoto = shrink(await loadImg(e.target.files[0]), 900, .82, 600000); const p = $("#pf-prev"); p.src = pendingProfilePhoto; p.hidden = false; } catch (err) { toast("사진을 열 수 없어요."); } return; }
   if (e.target.id === "st-import" && e.target.files[0]) { e.target.disabled = true; await runImport(e.target.files[0], $("#st-imp-msg")); e.target.disabled = false; e.target.value = ""; return; }
   if (e.target.id === "shareToggle") {
     const mid = me.memberId;

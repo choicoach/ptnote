@@ -19,7 +19,6 @@ export const COACH_DEFAULT = {
   name: "최효준 트레이너",
   tagline: "체형 분석 기반 자세 교정 PT",
   intro: "",
-  photo: "coach.jpg",
   poster: "coach-poster.jpg",
   careers: [
     "생활스포츠지도사 2급 (보디빌딩)",
