@@ -59,7 +59,7 @@ const prof = () => { const p = Object.assign({}, COACH_DEFAULT, Object.fromEntri
 function coachCard(p, big) {
   p = p || prof();
   if (big) return `<div class="hero">
-    <img class="hero-poster" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
+    <img class="hero-poster" draggable="false" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
     <div class="hero-brand">${esc(BRAND)}</div>
     ${p.tagline ? `<div class="hero-nm">${esc(p.name)} · ${esc(p.tagline)}</div>` : ""}
     ${p.intro ? `<div class="coach-intro">${esc(p.intro)}</div>` : ""}
@@ -69,7 +69,7 @@ function coachCard(p, big) {
 function coachAboutSheet() {
   const p = prof();
   openSheet(`<div class="row between"><h2>${esc(BRAND)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
-  <img class="hero-poster" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
+  <img class="hero-poster" draggable="false" src="${p.poster}" alt="${esc(p.name)} 소개 포스터">
   <div class="hero-brand" style="text-align:center">${esc(BRAND)}</div>
   ${p.tagline ? `<div class="hero-nm" style="text-align:center">${esc(p.name)} · ${esc(p.tagline)}</div>` : ""}
   ${p.intro ? `<div class="fb">${esc(p.intro)}</div>` : ""}
@@ -429,7 +429,6 @@ function memberHome(m) {
   if (coachProfile === undefined) getCoachProfile().then(() => render());
   return `<div class="section"><div class="eyebrow">${fmtD(today())}</div><h1>${esc(m.name)}님, 안녕하세요</h1>
   <div class="muted">${esc(m.goal || "")}</div></div>
-  <div class="section">${coachCard()}</div>
   ${memberSchedule(m)}
   <div class="section"><div class="stats">
     <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
@@ -1037,3 +1036,9 @@ document.addEventListener("change", async e => {
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
 
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+
+// block pinch / double-tap zoom (iOS Safari ignores user-scalable=no)
+["gesturestart", "gesturechange"].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
+document.addEventListener("touchmove", e => { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
+let lastTap = 0;
+document.addEventListener("touchend", e => { const n = Date.now(); if (n - lastTap < 300 && !e.target.closest("input,textarea,select")) e.preventDefault(); lastTap = n; }, { passive: false });
