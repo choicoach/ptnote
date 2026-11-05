@@ -31,14 +31,12 @@ export const COACH_DEFAULT = {
     "Body Sculpting",
     "Fundamental Training",
     "Session Program",
-    "Clockgym Nutritions Management",
-    "Clockgym Customer Service",
-    "Clockgym Personal Training",
     "전) 조이 휘트니스 트레이너",
     "전) ING 휘트니스 구로점 매니저",
     "전) 노보텔 휘트니스클럽",
     "전) 강남, 독산 트레이너",
-    "현) 100g훈련소 트레이닝센터",
-    "현) 클락짐 당산점 퍼스널트레이너"
+    "전) 100g훈련소 트레이닝센터",
+    "전) 클락짐 당산점",
+    "현) 래미안 에스티움"
   ]
 };
