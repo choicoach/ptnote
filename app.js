@@ -275,7 +275,7 @@ function coachHome() {
   return `${viewSwitch()}
   <div class="section">
     <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
-    <button class="pri" data-act="newMember">+ 회원 등록</button></div>
+    <div class="row"><button class="ghost" data-act="invite">회원 초대</button><button class="pri" data-act="newMember">+ 회원 등록</button></div></div>
     <div class="stats">
       <div class="stat"><b>${act.length}</b><span>관리 중인 회원</span></div>
       <div class="stat"><b>${needs.length}</b><span>확인 필요</span></div>
@@ -765,6 +765,25 @@ async function squarePhoto(file) {
   c.getContext("2d").drawImage(img, (img.width - n) / 2, (img.height - n) / 2, n, n, 0, 0, size, size);
   return c.toDataURL("image/jpeg", .8);
 }
+const APP_URL = "https://choicoach.github.io/ptnote/";
+const INVITE_TEXT = `안녕하세요, 최코치입니다 😊
+앞으로 운동일지·식단·체성분·수업 예약은 '최코치의 PT노트'로 함께 관리할게요.
+
+1. 아래 주소를 사파리(아이폰) 또는 크롬(갤럭시)으로 열어 주세요
+2. '처음이세요? 회원 가입 신청하기'를 눌러 신청해 주세요
+3. 제가 승인하면 바로 쓰실 수 있어요
+
+📱 홈 화면에 추가: 아이폰은 공유 → 홈 화면에 추가 / 갤럭시는 메뉴(점 3개) → 홈 화면에 추가
+카톡에서 열리면 오른쪽 아래 메뉴에서 '다른 브라우저로 열기'를 눌러 주세요.`;
+function inviteSheet() {
+  openSheet(`<div class="row between"><h2>회원 초대</h2><button class="ghost sm" data-act="close">닫기</button></div>
+  <div class="muted" style="font-size:13px">회원이 이 QR을 휴대폰 카메라로 찍으면 가입 신청 화면이 열려요.</div>
+  <div class="qr-box"><img src="qr.png" alt="최코치의 PT노트 QR코드" draggable="false"></div>
+  <div class="row between card" style="padding:10px 12px"><span class="num" style="font-size:14px;word-break:break-all">${APP_URL}</span><button class="sm" data-act="copyUrl">주소 복사</button></div>
+  <button class="pri" data-act="shareInvite">카톡·문자로 안내 보내기</button>
+  <details class="install"><summary>보낼 안내 문구 보기</summary><p style="white-space:pre-wrap">${esc(INVITE_TEXT)}\n${APP_URL}</p></details>
+  <div id="inv-msg" class="muted" style="font-size:13px"></div>`);
+}
 function settingsSheet() {
   if (isCoach() && coachProfile === undefined) { getCoachProfile().then(() => { if ($("#layer").innerHTML) settingsSheet(); }); }
   openSheet(`<div class="row between"><h2>설정</h2><button class="ghost sm" data-act="close">닫기</button></div>
@@ -810,6 +829,17 @@ document.addEventListener("click", async e => {
   if (a === "close") return closeSheet();
   if (a === "settings") return settingsSheet();
   if (a === "coachAbout") return coachAboutSheet();
+  if (a === "invite") return inviteSheet();
+  if (a === "copyUrl" || a === "shareInvite") {
+    const msg = $("#inv-msg"), full = INVITE_TEXT + "\n" + APP_URL;
+    if (a === "shareInvite" && navigator.share) {
+      try { await navigator.share({ title: "최코치의 PT노트", text: INVITE_TEXT, url: APP_URL }); msg.textContent = ""; return; }
+      catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(a === "copyUrl" ? APP_URL : full); msg.textContent = a === "copyUrl" ? "주소를 복사했어요." : "안내 문구를 복사했어요. 카톡이나 문자에 붙여 넣어 보내 주세요."; }
+    catch (e) { msg.textContent = "복사하지 못했어요. 아래 '보낼 안내 문구 보기'를 길게 눌러 복사해 주세요."; }
+    return;
+  }
   if (a === "approveReq") {
     const r = S.requests.find(x => x.id === id); if (!r) return;
     b.disabled = true;
