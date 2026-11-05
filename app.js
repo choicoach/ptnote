@@ -1040,5 +1040,3 @@ if ("serviceWorker" in navigator) window.addEventListener("load", () => navigato
 // block pinch / double-tap zoom (iOS Safari ignores user-scalable=no)
 ["gesturestart", "gesturechange"].forEach(t => document.addEventListener(t, e => e.preventDefault(), { passive: false }));
 document.addEventListener("touchmove", e => { if (e.touches && e.touches.length > 1) e.preventDefault(); }, { passive: false });
-let lastTap = 0;
-document.addEventListener("touchend", e => { const n = Date.now(); if (n - lastTap < 300 && !e.target.closest("input,textarea,select")) e.preventDefault(); lastTap = n; }, { passive: false });
