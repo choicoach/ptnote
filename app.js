@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, updatePassword, EmailAuthProvider, reauthenticateWithCredential } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-firestore.js";
-import { firebaseConfig, COACH_ID, ID_DOMAIN, AI_MODELS } from "./config.js";
+import { firebaseConfig, COACH_ID, ID_DOMAIN, AI_MODELS, BRAND, COACH_DEFAULT } from "./config.js";
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -55,13 +55,31 @@ async function getCoachProfile(force) {
   try { const d = await getDoc(doc(fs, "public", "coach")); coachProfile = d.exists() ? d.data() : null; } catch (e) { coachProfile = null; }
   return coachProfile;
 }
+const prof = () => { const p = Object.assign({}, COACH_DEFAULT, Object.fromEntries(Object.entries(coachProfile || {}).filter(([, v]) => v))); if (!Array.isArray(p.careers)) p.careers = String(p.careers || "").split("\n").filter(Boolean); return p; };
 function coachCard(p, big) {
-  if (!p || (!p.name && !p.photo)) return "";
-  return `<div class="coach-card${big ? " big" : ""}">
-    ${p.photo ? `<img class="coach-ph" src="${p.photo}" alt="${esc(p.name || "코치")} 사진">` : `<span class="coach-ph av">${esc((p.name || "코").slice(0, 1))}</span>`}
-    <div style="min-width:0"><div class="eyebrow">${big ? "PT노트 · 담당 코치" : "담당 코치"}</div><div class="coach-nm">${esc(p.name || "")}</div>
-    ${p.intro ? `<div class="coach-intro">${esc(p.intro)}</div>` : ""}</div></div>`;
+  p = p || prof();
+  if (big) return `<div class="hero">
+    <div class="hero-ph"><img src="${p.photo}" alt="${esc(p.name)} 사진"></div>
+    <div class="hero-brand">${esc(BRAND)}</div>
+    <div class="hero-nm">${esc(p.name)}${p.tagline ? ` · ${esc(p.tagline)}` : ""}</div>
+    ${p.intro ? `<div class="coach-intro">${esc(p.intro)}</div>` : ""}
+    <button type="button" class="ghost sm" data-act="coachAbout">코치 이력 보기</button>
+  </div>`;
+  return `<button type="button" class="coach-card" data-act="coachAbout">
+    <img class="coach-ph" src="${p.photo}" alt="${esc(p.name)} 사진">
+    <div style="min-width:0;flex:1"><div class="eyebrow">담당 코치</div><div class="coach-nm">${esc(p.name)}</div>
+    <div class="coach-intro">${esc(p.intro || p.tagline || "")}</div></div><span class="muted" aria-hidden="true">›</span></button>`;
 }
+function coachAboutSheet() {
+  const p = prof();
+  openSheet(`<div class="row between"><h2>${esc(BRAND)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
+  <div class="about-top"><img class="coach-ph" src="${p.photo}" alt=""><div><div class="coach-nm">${esc(p.name)}</div><div class="muted">${esc(p.tagline || "")}</div></div></div>
+  ${p.intro ? `<div class="fb">${esc(p.intro)}</div>` : ""}
+  ${p.careers.length ? `<div><div class="eyebrow" style="margin-bottom:6px">자격 · 경력</div><ul class="careers">${p.careers.map(c => `<li>${esc(c.replace(/^[-·•]\s*/, ""))}</li>`).join("")}</ul></div>` : ""}
+  ${p.poster ? `<img class="big-img" src="${p.poster}" alt="${esc(p.name)} 소개 포스터" loading="lazy">` : ""}
+  <div class="made-by">이 앱은 ${esc(p.name)}가 회원 관리를 위해 직접 기획하고 만들었어요.</div>`);
+}
+const madeBy = () => `<div class="made-by">${esc(BRAND)} · ${esc(prof().name)}가 직접 만든 회원 관리 앱</div>`;
 function loginView(msg) {
   $("#bnav").hidden = true; $("#hdrRight").innerHTML = "";
   $("#app").innerHTML = `<div class="login">
@@ -82,7 +100,8 @@ function loginView(msg) {
     </details>
   </div>`;
   $("#toSignup").onclick = signupView;
-  getCoachProfile().then(p => { const h = $("#lg-head"); const c = coachCard(p, true); if (h && c) h.innerHTML = c; });
+  $("#lg-head").innerHTML = coachCard(null, true);
+  getCoachProfile().then(() => { const h = $("#lg-head"); if (h) h.innerHTML = coachCard(null, true); });
   $("#loginForm").addEventListener("submit", async e => {
     e.preventDefault();
     const id = $("#lg-id").value.trim().toLowerCase(), pw = $("#lg-pw").value;
@@ -414,7 +433,7 @@ function memberHome(m) {
   if (coachProfile === undefined) getCoachProfile().then(() => render());
   return `<div class="section"><div class="eyebrow">${fmtD(today())}</div><h1>${esc(m.name)}님, 안녕하세요</h1>
   <div class="muted">${esc(m.goal || "")}</div></div>
-  ${coachProfile ? `<div class="section">${coachCard(coachProfile)}</div>` : ""}
+  <div class="section">${coachCard()}</div>
   ${memberSchedule(m)}
   <div class="section"><div class="stats">
     <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
@@ -533,7 +552,7 @@ function render() {
   if (me.role === "member") {
     const m = S.members.find(x => x.id === me.memberId);
     if (!m) { app.innerHTML = `<div class="section"><div class="empty">기록을 불러오는 중…</div></div>`; return; }
-    app.innerHTML = ui.mtab === "home" ? memberHome(m) : `<div class="section">${tabBody(m, ui.mtab, false)}</div>`;
+    app.innerHTML = (ui.mtab === "home" ? memberHome(m) : `<div class="section">${tabBody(m, ui.mtab, false)}</div>`) + madeBy();
   } else {
     const m = ui.coachMember && S.members.find(x => x.id === ui.coachMember);
     app.innerHTML = m ? coachMember(m) : (ui.coachView === "schedule" ? coachSchedule() : coachHome());
@@ -763,8 +782,11 @@ function settingsSheet() {
   ${isCoach() ? `<h3>내 프로필 (로그인 화면·회원 홈에 보여요)</h3>
   <div class="row"><img id="pf-prev" class="coach-ph" ${coachProfile?.photo ? `src="${coachProfile.photo}"` : "hidden"} alt="프로필 미리보기">
   <label class="f" for="pf-photo" style="flex:1">프로필 사진<input type="file" id="pf-photo" accept="image/*"></label></div>
-  <label class="f" for="pf-name">표시 이름<input id="pf-name" maxlength="30" value="${esc(coachProfile?.name || "")}" placeholder="예: 최효준 코치"></label>
+  <label class="f" for="pf-name">표시 이름<input id="pf-name" maxlength="30" value="${esc(coachProfile?.name || "")}" placeholder="${esc(COACH_DEFAULT.name)}"></label>
   <label class="f" for="pf-intro">소개 (2~3줄)<textarea id="pf-intro" maxlength="200" placeholder="예: 경력 16년 · 체형 분석 기반 PT · 생활스포츠지도사 2급 · KACEP 운동사">${esc(coachProfile?.intro || "")}</textarea></label>
+  <label class="f" for="pf-tag">한 줄 소개 (이름 옆에 보여요)<input id="pf-tag" maxlength="40" value="${esc(coachProfile?.tagline || "")}" placeholder="${esc(COACH_DEFAULT.tagline)}"></label>
+  <label class="f" for="pf-careers">자격·경력 (한 줄에 하나씩, 비워 두면 기본 이력)<textarea id="pf-careers" rows="6" placeholder="${esc(COACH_DEFAULT.careers.slice(0, 3).join("\n"))}">${esc(Array.isArray(coachProfile?.careers) ? coachProfile.careers.join("\n") : (coachProfile?.careers || ""))}</textarea></label>
+  <div class="muted" style="font-size:12px">비워 둔 칸은 기본값(포스터 내용)이 보여요.</div>
   <button data-act="saveProfile">프로필 저장</button>
   <h3>저장 공간 관리</h3>
   <div class="muted" style="font-size:13px">식사 원본 사진이 저장 공간 대부분을 차지해요. 오래된 원본을 지워도 목록의 작은 사진과 메모, 코멘트는 남아요.</div>
@@ -792,6 +814,7 @@ document.addEventListener("click", async e => {
   if (a === "closeScrim") { if (e.target === b) closeSheet(); return; }
   if (a === "close") return closeSheet();
   if (a === "settings") return settingsSheet();
+  if (a === "coachAbout") return coachAboutSheet();
   if (a === "approveReq") {
     const r = S.requests.find(x => x.id === id); if (!r) return;
     b.disabled = true;
@@ -811,7 +834,7 @@ document.addEventListener("click", async e => {
   }
   if (a === "logout") { closeSheet(); ui = { coachMember: null, tab: "sessions", mtab: "home" }; saveUi(); return signOut(auth); }
   if (a === "saveProfile") {
-    const data = { name: $("#pf-name").value.trim(), intro: $("#pf-intro").value.trim(), photo: pendingProfilePhoto || coachProfile?.photo || null };
+    const data = { name: $("#pf-name").value.trim(), intro: $("#pf-intro").value.trim(), tagline: $("#pf-tag").value.trim(), careers: $("#pf-careers").value.split("\n").map(x => x.trim()).filter(Boolean), photo: pendingProfilePhoto || coachProfile?.photo || null };
     b.disabled = true;
     if (await create("public", "coach", data)) { coachProfile = data; pendingProfilePhoto = null; toast("프로필을 저장했어요"); }
     b.disabled = false; return;

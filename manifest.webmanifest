@@ -1,6 +1,6 @@
 {
-  "name": "PT노트",
-  "short_name": "PT노트",
+  "name": "최코치의 PT노트",
+  "short_name": "최코치 PT노트",
   "description": "코치와 회원이 함께 쓰는 운동·식단·체성분 관리일지",
   "start_url": "./",
   "scope": "./",
