@@ -925,7 +925,7 @@ async function analyzeMeal(src, memo, type) {
       const items = (j.items || []).map(i => { const c = r1(i.carbs), p = r1(i.protein), f = r1(i.fat), kcal = Math.round(c * 4 + p * 4 + f * 9); return { name: String(i.name || "음식").slice(0, 30), grams: Math.round(+i.grams || 0), carbs: c, protein: p, fat: f, kcal, adjKcal: Math.max(kcal, Math.round(+i.adjKcal || kcal)) }; });
       const total = items.reduce((t, i) => ({ grams: t.grams + i.grams, carbs: r1(t.carbs + i.carbs), protein: r1(t.protein + i.protein), fat: r1(t.fat + i.fat), kcal: t.kcal + i.kcal, adjKcal: t.adjKcal + i.adjKcal }), { grams: 0, carbs: 0, protein: 0, fat: 0, kcal: 0, adjKcal: 0 });
       return { items, total, comment: String(j.comment || "").slice(0, 200), model: name, at: new Date().toISOString() };
-    } catch (e) { last = e; const m = String(e && (e.message || e.code) || ""); if (!/not.?found|404|unsupported|not supported/i.test(m)) throw e; }
+    } catch (e) { last = e; e.model = name; const m = String(e && (e.message || e.code) || ""); if (!/not.?found|\b404\b|unsupported|not supported|\b429\b|quota|resource.?exhausted|too many requests|\b503\b|overloaded|unavailable/i.test(m)) throw e; }
   }
   throw last;
 }
@@ -940,10 +940,15 @@ function nutritionText(r) {
 }
 function aiError(e) {
   const m = String(e && (e.message || e.code) || "");
-  if (/quota|429|resource.?exhausted|rate/i.test(m)) return "오늘 무료 분석 한도를 다 썼어요. 내일 다시 시도해 주세요.";
-  if (/api.?not.?enabled|has not been used|PERMISSION_DENIED|403|firebasevertexai|firebaseml|AI Logic/i.test(m)) return "Firebase에서 AI Logic(Gemini Developer API)을 켜야 써요. 켠 뒤 몇 분 기다렸다 다시 시도해 주세요.";
-  if (/Failed to fetch|network|import/i.test(m)) return "인터넷 연결을 확인하고 다시 시도해 주세요.";
-  return "분석하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  const raw = m.replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const tail = raw ? `\n(오류 내용${e && e.model ? ` · ${e.model}` : ""}: ${raw})` : "";
+  let t;
+  if (/\b429\b|quota|resource.?exhausted|too many requests|rate.?limit/i.test(m)) t = /per.?day|daily|PerDay/i.test(m) ? "오늘 무료 분석 한도를 다 썼어요. 내일 다시 시도해 주세요." : "잠깐 동안 요청이 많았어요. 1분 뒤 다시 눌러 주세요.";
+  else if (/\b503\b|overloaded|unavailable/i.test(m)) t = "AI 서버가 지금 붐벼요. 잠시 후 다시 시도해 주세요.";
+  else if (/api.?not.?enabled|has not been used|PERMISSION_DENIED|\b403\b|firebasevertexai|firebaseml|AI Logic|API key/i.test(m)) t = "Firebase에서 AI Logic(Gemini Developer API) 설정이 아직 안 끝났거나 반영 중이에요. 몇 분 뒤 다시 시도해 주세요.";
+  else if (/Failed to fetch|network|Failed to load|dynamically imported/i.test(m)) t = "인터넷 연결을 확인하고 다시 시도해 주세요.";
+  else t = "분석하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  return t + tail;
 }
 async function squarePhoto(file) {
   const img = await loadImg(file); const n = Math.min(img.width, img.height), size = 360;
