@@ -175,6 +175,32 @@ button.coach-card{width:100%;cursor:pointer;font-weight:400;color:var(--ink)}
 .made-by{text-align:center;font-size:12px;color:var(--muted);padding-block:22px 8px}
 .qr-box{background:#fff;border-radius:16px;padding:14px;width:min(78vw,300px);align-self:center}
 .qr-box img{display:block;width:100%;image-rendering:pixelated;pointer-events:none;-webkit-touch-callout:none}
+.sheet>*{flex-shrink:0}
+.qc-row{display:flex;gap:6px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none}
+.qc{flex:none;background:var(--sunk);border:1px solid var(--line);border-radius:999px;padding:7px 12px;font-size:13px;font-weight:500;color:var(--ink);white-space:nowrap}
+.qc.on{border-color:var(--accent);color:var(--accent)}
+.feed-btn{width:100%;font-size:16px;padding:13px}
+.feed-img{max-height:46vh;object-fit:contain;background:var(--sunk)}
+.chip.fire{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.gwrap{display:flex;flex-direction:column;gap:5px}
+.gbar{display:grid;grid-template-columns:44px 1fr auto;gap:8px;align-items:center;font-size:12px}
+.gl{color:var(--muted)} .gv{color:var(--ink)}
+.gt{height:8px;border-radius:5px;background:var(--sunk);overflow:hidden}
+.gt i{display:block;height:100%;background:var(--c-smm);border-radius:5px}
+.gt i.ok{background:var(--ok)} .gt i.over{background:var(--bad)}
+.gbar{grid-template-columns:52px 1fr auto}
+.gv em{font-style:normal;font-size:11px;margin-left:4px;color:var(--c-smm)} .gv em.ok{color:var(--ok)} .gv em.over{color:var(--bad)}
+.wbar.ok{background:var(--ok)} .wbar.under{background:var(--c-smm)}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.goal-card{gap:8px}
+.wrep{gap:10px}
+.wbars{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;height:92px;align-items:end}
+.wb{display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end}
+.wbar{width:100%;max-width:26px;background:var(--accent);border-radius:6px 6px 2px 2px;min-height:0}
+.wbar.over{background:var(--bad)}
+.wd2{font-size:11px;color:var(--muted)} .wn{font-size:11px;color:var(--ink);min-height:14px}
+.wstats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;text-align:center}
+.wstats b{display:block;font-size:17px} .wstats span{font-size:11px;color:var(--muted)}
 .danger-box{border:1px solid color-mix(in srgb,var(--bad) 40%,var(--line));border-radius:var(--r);padding:12px;margin-top:8px}
 .coach-intro{color:var(--muted);font-size:13px;white-space:pre-wrap;margin-top:2px}
 

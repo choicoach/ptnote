@@ -36,9 +36,9 @@ function errMsg(e) {
   if (c.includes("invalid-argument")) return "사진이 너무 커요. 다른 사진으로 시도해 주세요.";
   return "저장하지 못했어요. 인터넷 연결을 확인해 주세요.";
 }
-async function create(col, id, data) {
+async function create(col, id, data, merge) {
   data.updatedAt = new Date().toISOString();
-  try { await setDoc(doc(fs, col, id), data); return true; } catch (e) { console.error(e); toast(errMsg(e)); return false; }
+  try { await setDoc(doc(fs, col, id), data, merge ? { merge: true } : undefined); return true; } catch (e) { console.error(e); toast(errMsg(e)); return false; }
 }
 async function patch(col, id, data) {
   data.updatedAt = new Date().toISOString();
@@ -276,6 +276,7 @@ function coachHome() {
   <div class="section">
     <div class="row between"><div><div class="eyebrow">${fmtD(today())}</div><h1>오늘의 회원 관리</h1></div>
     <div class="row"><button class="ghost" data-act="invite">회원 초대</button><button class="pri" data-act="newMember">+ 회원 등록</button></div></div>
+    ${(() => { const n = S.meals.filter(x => !x.seen && !x.coachComment).length; return n ? `<button class="pri feed-btn" data-act="openFeed">📷 확인할 식단 ${n}장 모아보기</button>` : `<div class="muted" style="font-size:13px">확인할 새 식단이 없어요.</div>`; })()}
     <div class="stats">
       <div class="stat"><b>${act.length}</b><span>관리 중인 회원</span></div>
       <div class="stat"><b>${needs.length}</b><span>확인 필요</span></div>
@@ -301,6 +302,7 @@ function coachHome() {
       if (s.lastMeal == null) chips.push(`<span class="chip">최근 2주 식단 없음</span>`);
       else if (s.mealGap >= 2) chips.push(`<span class="chip bad">식단 ${s.mealGap}일째 없음</span>`);
       if (m.shared) chips.push(`<span class="chip ok">기록 공개</span>`);
+      const sk = streakOf(m.id); if (sk >= 2) chips.push(streakBadge(sk));
       const nb = nextBooking(m.id); if (nb) chips.push(`<span class="chip">다음 수업 ${shortD(nb.date)} ${esc(nb.start)}</span>`);
       const tr = s.wDelta == null ? (s.lastW ? `<div class="num">${s.lastW}kg</div>` : "") : `<div class="num">${s.lastW}kg</div><div class="${s.wDelta > 0 ? "up" : "down"}">${s.wDelta > 0 ? "+" : ""}${s.wDelta.toFixed(1)}</div>`;
       return `<button class="mem" data-act="openMember" data-id="${esc(m.id)}">
@@ -352,15 +354,194 @@ function sessionsView(m, coach) {
     ${coach && s.memberFb && !s.fbSeen ? `<button class="sm" data-act="markFb" data-id="${esc(s.id)}">확인 완료</button>` : ""}
   </article>`).join("") : `<div class="empty">${coach ? "아직 수업 기록이 없어요. <b>오늘 수업 기록</b>으로 운동과 피드백을 남겨 보세요." : "코치님이 수업 기록을 남기면 여기에 표시돼요."}</div>`}`;
 }
+/* ---------- meal management ---------- */
+const DEFAULT_QUICK = ["👍 잘 드셨어요!", "단백질을 조금 더 추가해 주세요 (닭가슴살·계란·두부)", "채소를 한 줌 더 곁들여 주세요", "소스·드레싱은 따로 덜어서 반만", "밥 양을 2/3 공기로 줄여 볼게요", "물을 충분히 드세요 (하루 2L)", "튀김 대신 굽거나 찐 조리로 바꿔 볼게요", "간식은 과일·견과류 한 줌으로"];
+const quickList = () => { const t = S.notes && S.notes._templates && S.notes._templates.items; return Array.isArray(t) && t.length ? t : DEFAULT_QUICK; };
+const quickChips = () => `<div class="qc-row">${quickList().map(t => `<button type="button" class="qc" data-act="qc" data-t="${esc(t)}">${esc(t)}</button>`).join("")}</div>`;
+const mealKcal = x => x.nutrition && x.nutrition.total ? (x.nutrition.total.adjKcal || x.nutrition.total.kcal || 0) : null;
+const mealNut = (x, k) => x.nutrition && x.nutrition.total ? (+x.nutrition.total[k] || 0) : 0;
+function dayStats(mid, date) {
+  const items = S.meals.filter(x => x.memberId === mid && x.date === date);
+  const an = items.filter(x => mealKcal(x) != null);
+  const sum = k => an.reduce((a, x) => a + mealNut(x, k), 0);
+  return { n: items.length, analyzed: an.length, kcal: an.reduce((a, x) => a + mealKcal(x), 0), carbs: sum("carbs"), protein: sum("protein"), fat: sum("fat") };
+}
+const shiftDate = (d, n) => { const x = new Date(d + "T00:00:00"); x.setDate(x.getDate() + n); return iso(x); };
+function streakOf(mid) {
+  const days = new Set(S.meals.filter(x => x.memberId === mid).map(x => x.date));
+  let d = days.has(today()) ? today() : shiftDate(today(), -1), n = 0;
+  while (days.has(d)) { n++; d = shiftDate(d, -1); }
+  return n;
+}
+/* daily goal: { kcal, carbs, protein, fat, ratio:{c,p,f} } — older goals had kcalMin/kcalMax/protein */
+function goalT(m) {
+  const g = m && m.mealGoal; if (!g) return null;
+  if (g.kcal) return g;
+  if (g.kcalMax || g.protein) return { kcal: g.kcalMax ? Math.round(((g.kcalMin || g.kcalMax) + g.kcalMax) / 2) : null, protein: g.protein || null, carbs: null, fat: null };
+  return null;
+}
+const gState = (v, t) => v > t * 1.1 ? "over" : v >= t * 0.9 ? "ok" : "under";
+function goalBar(label, val, target, unit) {
+  if (!target) return "";
+  const pct = Math.round(val / target * 100), st = gState(val, target);
+  return `<div class="gbar"><span class="gl">${label}</span><span class="gt"><i class="${st}" style="width:${Math.min(100, pct)}%"></i></span><span class="gv num">${Math.round(val).toLocaleString()} / ${Math.round(target).toLocaleString()}${unit} <em class="${st}">${pct}%</em></span></div>`;
+}
+function dayGoalHtml(m, date) {
+  const g = goalT(m), st = dayStats(m.id, date);
+  if (!st.analyzed || !g) return "";
+  return `<div class="gwrap">${goalBar("칼로리", st.kcal, g.kcal, "kcal")}${goalBar("탄수화물", st.carbs, g.carbs, "g")}${goalBar("단백질", st.protein, g.protein, "g")}${goalBar("지방", st.fat, g.fat, "g")}${st.analyzed < st.n ? `<div class="muted" style="font-size:11px">분석한 ${st.analyzed}/${st.n}끼 기준</div>` : ""}</div>`;
+}
+function goalCard(m, coach) {
+  const g = goalT(m);
+  if (!g) return coach ? `<div class="card row between"><span class="muted" style="font-size:13px">하루 식단 목표가 아직 없어요.</span><button class="sm pri" data-act="goalCalc" data-id="${esc(m.id)}">목표 정하기</button></div>` : "";
+  const r = g.ratio || {}, cell = (lab, v, pc) => v ? `<div><b class="num">${Math.round(v)}g</b><span>${lab}${pc ? ` ${pc}%` : ""}</span></div>` : "";
+  return `<div class="card stack goal-card"><div class="row between"><b>하루 식단 목표</b>${coach ? `<button class="sm" data-act="goalCalc" data-id="${esc(m.id)}">목표 바꾸기</button>` : `<span class="muted" style="font-size:12px">코치님이 정한 목표</span>`}</div>
+    <div class="wstats">${g.kcal ? `<div><b class="num">${Math.round(g.kcal).toLocaleString()}</b><span>kcal</span></div>` : ""}${cell("탄수화물", g.carbs, r.c)}${cell("단백질", g.protein, r.p)}${cell("지방", g.fat, r.f)}</div>
+    <div class="muted" style="font-size:11px">초록 = 목표의 90~110% · 파랑 = 부족 · 빨강 = 초과</div></div>`;
+}
+function weekReport(m, coach) {
+  const off = ui.wkOff || 0, end = shiftDate(today(), -7 * off), start = shiftDate(end, -6);
+  const meals = S.meals.filter(x => x.memberId === m.id && x.date >= start && x.date <= end);
+  const days = [...Array(7)].map((_, i) => shiftDate(start, i));
+  const per = days.map(d => ({ d, ...dayStats(m.id, d) }));
+  const rec = per.filter(p => p.n).length, an = per.filter(p => p.analyzed && !(off === 0 && p.d === today()));   // today is still in progress
+  const g = goalT(m) || {};
+  const avg = k => an.length ? an.reduce((a, p) => a + p[k], 0) / an.length : null;
+  const avgK = avg("kcal"), avgP = avg("protein");
+  const kOk = g.kcal ? an.filter(p => gState(p.kcal, g.kcal) === "ok").length : null;
+  const pOk = g.protein ? an.filter(p => p.protein >= g.protein * 0.9).length : null;
+  const score = p => ["kcal", "carbs", "protein", "fat"].reduce((a, k) => a + (g[k] ? Math.abs(p[k] - g[k]) / g[k] : 0), 0);
+  const ranked = (g.kcal || g.protein) && an.length >= 2 ? [...an].sort((a, b) => score(a) - score(b)) : [];
+  const fb = meals.filter(x => x.coachComment).length;
+  const bars = per.map(p => { const h = p.n ? Math.max(14, Math.min(100, (p.analyzed && g.kcal ? p.kcal / g.kcal / 1.3 : p.n / 4) * 100)) : 0;
+    const cls = p.analyzed && g.kcal ? " " + gState(p.kcal, g.kcal) : "";
+    return `<div class="wb"><span class="wbar${cls}" style="height:${h}%"></span><span class="wd2">${"일월화수목금토"[new Date(p.d + "T00:00:00").getDay()]}</span><span class="wn num">${p.n || ""}</span></div>`; }).join("");
+  return `<div class="card stack wrep">
+    <div class="row between"><b>주간 식단 리포트</b><span class="row"><button class="sm ghost" data-act="wkNav" data-k="1" aria-label="이전 주">‹</button><span class="muted num" style="font-size:13px">${shortD(start)}~${shortD(end)}</span><button class="sm ghost" data-act="wkNav" data-k="-1" aria-label="다음 주" ${off ? "" : "disabled"}>›</button></span></div>
+    <div class="wbars${g.kcal ? " has-goal" : ""}">${bars}</div>
+    <div class="wstats">
+      <div><b class="num">${rec}/7</b><span>기록한 날</span></div>
+      <div><b class="num">${meals.length}</b><span>올린 끼니</span></div>
+      <div><b class="num">${avgK != null ? Math.round(avgK).toLocaleString() : "-"}</b><span>하루 평균 kcal</span></div>
+      <div><b class="num">${avgP != null ? Math.round(avgP) + "g" : "-"}</b><span>하루 평균 단백질</span></div>
+    </div>
+    ${g.kcal || g.protein ? `<div class="muted" style="font-size:13px">${kOk != null ? `칼로리 목표 달성 ${kOk}/${an.length}일` : ""}${kOk != null && pOk != null ? " · " : ""}${pOk != null ? `단백질 목표 달성 ${pOk}/${an.length}일` : ""}</div>` : `<div class="muted" style="font-size:12px">${coach ? "식단 목표를 정하면 달성률이 나와요." : "코치님이 식단 목표를 정하면 달성률이 나와요."}</div>`}
+    ${ranked.length ? `<div class="muted" style="font-size:13px">가장 잘한 날 <b>${fmtD(ranked[0].d)}</b> · 아쉬운 날 <b>${fmtD(ranked[ranked.length - 1].d)}</b></div>` : ""}
+    <div class="muted" style="font-size:12px">코치 코멘트 ${fb}개 · 평균·달성률은 AI 분석한 날${off === 0 ? "(오늘 제외)" : ""} ${an.length}일 기준</div>
+  </div>`;
+}
+/* ---------- goal calculator (coach only) ---------- */
+const CALC_DEF = { cutSlow: -10, cutNormal: -20, cutFast: -25, bulk: 10, recomp: -5, pCut: 2.2, pBulk: 2.0, pKeep: 1.8, pRecomp: 2.2, fatPct: 25 };
+const calcConf = () => Object.assign({}, CALC_DEF, (S.notes && S.notes._calc) || {});
+const ACTS = [["1.2", "거의 안 움직임 (사무직, 운동 주 1회 이하)"], ["1.375", "가볍게 (운동 주 2~3회)"], ["1.55", "보통 (운동 주 4~5회)"], ["1.725", "많이 (매일 운동·육체 노동)"]];
+const GOALS = [["cut", "체지방 감량"], ["keep", "유지"], ["bulk", "근육 증가"], ["recomp", "바디 리컴프 (근육↑ 지방↓)"]];
+function calcGoal(v) {
+  const c = calcConf();
+  const lbm = v.lbm || (v.weight && v.fat ? v.weight - v.fat : null);
+  const bmr = v.bmr || (lbm ? 370 + 21.6 * lbm : null);
+  if (!bmr || !lbm) return null;
+  const adj = v.goal === "cut" ? (v.speed === "slow" ? c.cutSlow : v.speed === "fast" ? c.cutFast : c.cutNormal) : v.goal === "bulk" ? c.bulk : v.goal === "recomp" ? c.recomp : 0;
+  let kcal = bmr * v.act * (1 + adj / 100);
+  if (adj < 0) kcal = Math.max(kcal, bmr);
+  kcal = Math.round(kcal / 10) * 10;
+  const ppk = { cut: c.pCut, bulk: c.pBulk, keep: c.pKeep, recomp: c.pRecomp }[v.goal];
+  const pP = Math.round(lbm * ppk * 4 / kcal * 100), fP = Math.round(c.fatPct);
+  return { kcal, p: pP, f: fP, c: Math.max(0, 100 - pP - fP), bmr: Math.round(bmr), lbm: Math.round(lbm * 10) / 10, tdee: Math.round(bmr * v.act) };
+}
+function goalSheet(m) {
+  if (!isCoach()) return;
+  const r = by(of("body", m.id), "date")[0] || {};
+  const bs = (S.notes[m.id] && S.notes[m.id].goalBasis) || {};
+  const g = m.mealGoal && m.mealGoal.kcal ? m.mealGoal : null;
+  const lbm0 = r.lbm ?? (r.weight != null && r.fat != null ? Math.round((r.weight - r.fat) * 10) / 10 : "");
+  const opt = (arr, cur) => arr.map(([v, t]) => `<option value="${v}" ${String(cur) === v ? "selected" : ""}>${t}</option>`).join("");
+  openSheet(`<div class="row between"><h2>식단 목표 · ${esc(m.name)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
+  <div class="muted" style="font-size:12px">이 화면은 코치 계정에서만 보여요. 회원에게는 저장한 목표 숫자만 보여요.</div>
+  <div class="eyebrow">인바디 ${r.date ? `(${fmtD(r.date)} 기록)` : "(기록 없음 · 직접 입력)"}</div>
+  <div class="grid2">
+    <label class="f" for="gc-w">체중 (kg)<input id="gc-w" inputmode="decimal" value="${esc(r.weight ?? "")}"></label>
+    <label class="f" for="gc-fat">체지방량 (kg)<input id="gc-fat" inputmode="decimal" value="${esc(r.fat ?? "")}"></label>
+    <label class="f" for="gc-lbm">제지방량 (kg)<input id="gc-lbm" inputmode="decimal" value="${esc(lbm0)}"></label>
+    <label class="f" for="gc-bmr">기초대사량 (kcal)<input id="gc-bmr" inputmode="numeric" value="${esc(r.bmr ?? "")}" placeholder="비우면 제지방량으로 추정"></label>
+  </div>
+  <label class="f" for="gc-goal">운동 목표 (회원과 상의한 내용)<select id="gc-goal">${opt(GOALS, bs.goal || "cut")}</select></label>
+  <label class="f" for="gc-speed" id="gc-speed-w">감량 속도<select id="gc-speed">${opt([["slow", "완만하게"], ["normal", "보통"], ["fast", "빠르게"]], bs.speed || "normal")}</select></label>
+  <label class="f" for="gc-act">평소 활동량<select id="gc-act">${opt(ACTS, bs.act || "1.375")}</select></label>
+  <div id="gc-info" class="muted num" style="font-size:12px"></div>
+  <div class="eyebrow">하루 목표 (숫자를 고쳐도 돼요)</div>
+  <label class="f" for="gc-kcal">칼로리 (kcal)<input id="gc-kcal" inputmode="numeric" value="${esc(g ? g.kcal : "")}"></label>
+  <div class="grid3">
+    <label class="f" for="gc-c">탄수화물 %<input id="gc-c" inputmode="numeric" value="${esc(g?.ratio?.c ?? "")}"></label>
+    <label class="f" for="gc-p">단백질 %<input id="gc-p" inputmode="numeric" value="${esc(g?.ratio?.p ?? "")}"></label>
+    <label class="f" for="gc-f">지방 %<input id="gc-f" inputmode="numeric" value="${esc(g?.ratio?.f ?? "")}"></label>
+  </div>
+  <div id="gc-out" class="wstats"></div>
+  <div id="gc-msg" class="muted" style="font-size:13px"></div>
+  <div class="row">${g || m.mealGoal ? `<button class="ghost" data-act="goalClear" data-id="${esc(m.id)}">목표 지우기</button>` : ""}<button class="ghost" data-act="goalRecalc" style="flex:1">다시 계산</button><button class="pri" data-act="goalSave" data-id="${esc(m.id)}" style="flex:2">저장</button></div>`, sh => {
+    const recalc = () => {
+      const v = { weight: numOrNull($("#gc-w").value), fat: numOrNull($("#gc-fat").value), lbm: numOrNull($("#gc-lbm").value), bmr: numOrNull($("#gc-bmr").value), goal: $("#gc-goal").value, speed: $("#gc-speed").value, act: +$("#gc-act").value };
+      const res = calcGoal(v);
+      if (!res) { $("#gc-info").textContent = "제지방량(또는 체중+체지방량)을 입력하면 계산돼요."; return; }
+      $("#gc-kcal").value = res.kcal; $("#gc-c").value = res.c; $("#gc-p").value = res.p; $("#gc-f").value = res.f;
+      $("#gc-info").textContent = `기초대사량 ${res.bmr.toLocaleString()}${v.bmr ? "" : "(추정)"} · 활동 포함 소비 약 ${res.tdee.toLocaleString()}kcal · 제지방량 ${res.lbm}kg`;
+      grams();
+    };
+    const grams = () => {
+      const k = numOrNull($("#gc-kcal").value) || 0, c = numOrNull($("#gc-c").value) || 0, p = numOrNull($("#gc-p").value) || 0, f = numOrNull($("#gc-f").value) || 0;
+      const sum = c + p + f;
+      $("#gc-out").innerHTML = k ? `<div><b class="num">${k.toLocaleString()}</b><span>kcal</span></div><div><b class="num">${Math.round(k * c / 400)}g</b><span>탄수화물</span></div><div><b class="num">${Math.round(k * p / 400)}g</b><span>단백질</span></div><div><b class="num">${Math.round(k * f / 900)}g</b><span>지방</span></div>` : "";
+      $("#gc-msg").textContent = k && sum !== 100 ? `비율 합계가 ${sum}%예요. 100%로 맞춰 주세요.` : "";
+    };
+    const showSpeed = () => { $("#gc-speed-w").hidden = $("#gc-goal").value !== "cut"; };
+    showSpeed();
+    sh.addEventListener("change", e => { if (["gc-goal", "gc-speed", "gc-act"].includes(e.target.id)) { showSpeed(); recalc(); } });
+    sh.addEventListener("input", e => { if (["gc-w", "gc-fat", "gc-lbm", "gc-bmr"].includes(e.target.id)) recalc(); else if (["gc-kcal", "gc-c", "gc-p", "gc-f"].includes(e.target.id)) grams(); });
+    sh._recalc = recalc;
+    if (g) { grams(); const res = calcGoal({ weight: numOrNull($("#gc-w").value), fat: numOrNull($("#gc-fat").value), lbm: numOrNull($("#gc-lbm").value), bmr: numOrNull($("#gc-bmr").value), goal: $("#gc-goal").value, speed: $("#gc-speed").value, act: +$("#gc-act").value }); if (res) $("#gc-info").textContent = `지금 인바디 기준 계산값: ${res.kcal.toLocaleString()}kcal · 탄 ${res.c}% · 단 ${res.p}% · 지 ${res.f}% (다시 계산을 누르면 적용)`; }
+    else recalc();
+  });
+}
+function streakBadge(n) { return n >= 2 ? `<span class="chip fire">🔥 ${n}일 연속</span>` : ""; }
+
+/* ---------- meal review feed (coach) ---------- */
+let feed = null;
+function openFeed() {
+  const q = S.meals.filter(x => !x.seen && !x.coachComment).sort((a, b) => (a.date + (a.updatedAt || "")) < (b.date + (b.updatedAt || "")) ? -1 : 1).map(x => x.id);
+  feed = { q, i: 0 }; renderFeed();
+}
+function renderFeed() {
+  if (!feed) return;
+  const q = feed.q.filter(id => find("meals", id)); feed.q = q;
+  if (feed.i >= q.length) feed.i = Math.max(0, q.length - 1);
+  if (!q.length) { openSheet(`<div class="row between"><h2>식단 확인</h2><button class="ghost sm" data-act="closeFeed">닫기</button></div><div class="empty">확인할 식단을 다 봤어요 👏</div>`); return; }
+  const x = find("meals", q[feed.i]); const m = S.members.find(z => z.id === x.memberId) || { name: "회원", id: x.memberId };
+  const st = dayStats(m.id, x.date), sk = streakOf(m.id), shown = x.thumb || x.photo;
+  pendingNutrition = null;
+  openSheet(`<div class="row between"><h2>식단 확인 <span class="muted num" style="font-size:15px">${feed.i + 1} / ${q.length}</span></h2><button class="ghost sm" data-act="closeFeed">닫기</button></div>
+    <div class="row between"><div><b>${esc(m.name)}</b> <span class="muted">${fmtD(x.date)} · ${esc(x.type || "")}</span></div>${streakBadge(sk)}</div>
+    <div class="muted" style="font-size:13px">이날 ${st.n}끼${st.analyzed ? ` · 분석한 ${st.analyzed}끼 약 ${Math.round(st.kcal).toLocaleString()}kcal · 단백질 ${Math.round(st.protein)}g` : ""}</div>
+    ${dayGoalHtml(m, x.date)}
+    ${shown ? `<img id="meal-big" class="big-img feed-img" src="${shown}" alt="식사 사진">` : `<div class="empty">사진 없음</div>`}
+    ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
+    ${shown ? `<div class="row between"><span class="muted" style="font-size:13px">칼로리·탄단지 추정</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
+    ${quickChips()}
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="4" placeholder="빠른 코멘트를 누르거나 직접 적어 주세요"></textarea></label>
+    <div class="row"><button class="ghost" data-act="feedPrev" ${feed.i ? "" : "disabled"} aria-label="이전">‹</button><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">저장하고 다음</button><button class="ghost" data-act="feedNext" ${feed.i < q.length - 1 ? "" : "disabled"} aria-label="다음">›</button></div>`);
+  showFull(x, "#meal-big");
+}
+
 function mealsView(m, coach) {
   const meals = of("meals", m.id);
   const days = [...new Set(meals.map(x => x.date))].sort().reverse();
   const order = { "아침": 1, "점심": 2, "저녁": 3, "간식": 4 };
-  return `<div class="row between"><h2>식단일지</h2>${!coach ? `<button class="pri sm" data-act="newMeal">+ 식사 올리기</button>` : ""}</div>
+  return `<div class="row between"><h2>식단일지 ${streakBadge(streakOf(m.id))}</h2>${!coach ? `<button class="pri sm" data-act="newMeal">+ 식사 올리기</button>` : ""}</div>
+  ${goalCard(m, coach)}
+  ${meals.length ? weekReport(m, coach) : ""}
   ${!coach ? `<div class="muted" style="font-size:13px">물 이외에 먹은 것은 모두 사진으로 남겨 주세요. 식사 전에 찍어 두고 저녁에 한 번에 올려도 괜찮아요.</div>` : ""}
   ${days.length ? days.map(d => {
     const items = meals.filter(x => x.date === d).sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
     return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted num" style="font-size:13px">${(() => { const t = items.filter(i => i.nutrition?.total); if (!t.length) return items.length + "끼"; const k = t.reduce((a, i) => a + (i.nutrition.total.adjKcal || i.nutrition.total.kcal || 0), 0), pr = t.reduce((a, i) => a + (i.nutrition.total.protein || 0), 0); return `${items.length}끼 · 약 ${Math.round(k).toLocaleString()}kcal · 단백질 ${Math.round(pr)}g${t.length < items.length ? " (일부)" : ""}`; })()}</span></div>
+    ${dayGoalHtml(m, d)}
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
       ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
       ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
@@ -398,8 +579,8 @@ function bodyView(m) {
   const r = by(of("body", m.id), "date", 1);
   return `<div class="row between"><h2>체성분 추이</h2><button class="pri sm" data-act="newBody">+ 인바디 기록</button></div>
   <div class="charts">${spark(r, "weight", "w")}${spark(r, "smm", "smm")}${spark(r, "fat", "fat")}</div>
-  ${r.length ? `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>날짜</th><th class="n">체중</th><th class="n">골격근</th><th class="n">체지방</th><th class="n">체지방률</th><th></th></tr></thead><tbody>
-  ${[...r].reverse().map(x => `<tr><td class="num">${esc(x.date.slice(2).replace(/-/g, "."))}</td><td class="n">${x.weight ?? "-"}</td><td class="n">${x.smm ?? "-"}</td><td class="n">${x.fat ?? "-"}</td><td class="n">${x.pbf != null && x.pbf !== "" ? x.pbf + "%" : "-"}</td><td class="n"><button class="sm ghost" data-act="editBody" data-id="${esc(x.id)}">수정</button></td></tr>`).join("")}
+  ${r.length ? `<div class="card"><div class="tbl-wrap"><table><thead><tr><th>날짜</th><th class="n">체중</th><th class="n">골격근</th><th class="n">체지방</th><th class="n">체지방률</th><th class="n">제지방</th><th class="n">기초대사</th><th></th></tr></thead><tbody>
+  ${[...r].reverse().map(x => `<tr><td class="num">${esc(x.date.slice(2).replace(/-/g, "."))}</td><td class="n">${x.weight ?? "-"}</td><td class="n">${x.smm ?? "-"}</td><td class="n">${x.fat ?? "-"}</td><td class="n">${x.pbf != null && x.pbf !== "" ? x.pbf + "%" : "-"}</td><td class="n">${x.lbm ?? "-"}</td><td class="n">${x.bmr ?? "-"}</td><td class="n"><button class="sm ghost" data-act="editBody" data-id="${esc(x.id)}">수정</button></td></tr>`).join("")}
   </tbody></table></div></div>` : `<div class="empty">인바디 결과지의 체중·골격근량·체지방량을 입력하면 그래프가 그려져요.</div>`}`;
 }
 function workoutsView(m, coach) {
@@ -431,10 +612,11 @@ function memberHome(m) {
   <div class="muted">${esc(m.goal || "")}</div></div>
   ${memberSchedule(m)}
   <div class="section"><div class="stats">
-    <div class="stat"><b>${tMeals}</b><span>오늘 올린 식사</span></div>
+    <div class="stat"><b>${tMeals}${streakOf(m.id) >= 2 ? ` <small class="num" style="font-size:13px">🔥${streakOf(m.id)}</small>` : ""}</b><span>오늘 올린 식사</span></div>
     <div class="stat"><b>${s.lastW ?? "-"}</b><span>최근 체중 kg</span></div>
     <div class="stat"><b>${pend}</b><span>피드백 남길 수업</span></div>
   </div>
+  ${dayGoalHtml(m, today())}
   <div class="row"><button class="pri" data-act="newMeal" style="flex:1">식사 사진 올리기</button><button data-act="newBody" style="flex:1">인바디 입력</button></div></div>
   <div class="section"><h2>최근 수업</h2>
   ${last ? `<article class="card stack"><div class="sess-h"><span class="sess-date">${fmtD(last.date)}</span></div>${exTable(last.exercises)}
@@ -575,6 +757,7 @@ function memberSheet(m) {
   <label class="f" for="fm-goal">목표<input id="fm-goal" value="${esc(m.goal || "")}" placeholder="예: 체지방 감량, 무릎 통증 개선"></label>
   <div class="grid2"><label class="f" for="fm-start">시작일<input type="date" id="fm-start" value="${esc(m.start || today())}"></label>
   <label class="f" for="fm-status">상태<select id="fm-status"><option value="active">진행 중</option><option value="ended" ${m.status === "ended" ? "selected" : ""}>종료</option></select></label></div>
+  ${isNew ? "" : `<div class="row between"><span class="muted" style="font-size:13px">식단 목표 ${goalT(m) && goalT(m).kcal ? `<b class="num">${Math.round(goalT(m).kcal).toLocaleString()}kcal</b>` : "없음"}</span><button type="button" class="sm" data-act="goalCalc" data-id="${esc(m.id)}">식단 목표 계산</button></div>`}
   <label class="f" for="fm-memo">코치 메모 (회원에게 안 보임)<textarea id="fm-memo" placeholder="체형 특이사항, 통증 이력 등">${esc(note)}</textarea></label>
   <div id="fm-msg" class="muted" style="font-size:13px"></div>
   <div class="row"><button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMember" data-id="${esc(m.id || "")}" style="flex:2">${isNew ? "등록하고 아이디 만들기" : "저장"}</button></div>
@@ -643,7 +826,8 @@ function mealSheet(x) {
     ${shown ? `<img id="meal-big" class="big-img" src="${shown}" alt="식사 사진">` : ""}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     ${shown ? `<div class="row between"><span class="muted" style="font-size:13px">사진으로 칼로리·탄단지를 추정해 코멘트에 채워요</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
-    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="8" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
+    ${quickChips()}
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="6" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
     <div class="row"><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">코멘트 저장</button></div>`);
     showFull(x, "#meal-big");
     return;
@@ -674,6 +858,8 @@ function bodySheet(r) {
    <label class="f" for="fb-smm">골격근량 (kg)<input id="fb-smm" inputmode="decimal" value="${esc(r.smm ?? "")}"></label>
    <label class="f" for="fb-fat">체지방량 (kg)<input id="fb-fat" inputmode="decimal" value="${esc(r.fat ?? "")}"></label>
    <label class="f" for="fb-pbf">체지방률 (%)<input id="fb-pbf" inputmode="decimal" value="${esc(r.pbf ?? "")}"></label>
+   <label class="f" for="fb-lbm">제지방량 (kg)<input id="fb-lbm" inputmode="decimal" value="${esc(r.lbm ?? "")}"></label>
+   <label class="f" for="fb-bmr">기초대사량 (kcal)<input id="fb-bmr" inputmode="numeric" value="${esc(r.bmr ?? "")}"></label>
   </div>
   <div class="row">${r.id ? `<button class="ghost" data-act="delBody" data-id="${esc(r.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveBody" data-id="${esc(r.id || "")}" style="flex:2">저장</button></div>`);
 }
@@ -802,6 +988,13 @@ function settingsSheet() {
   <label class="f" for="pf-careers">자격·경력 (한 줄에 하나씩, 비워 두면 기본 이력)<textarea id="pf-careers" rows="6" placeholder="${esc(COACH_DEFAULT.careers.slice(0, 3).join("\n"))}">${esc(Array.isArray(coachProfile?.careers) ? coachProfile.careers.join("\n") : (coachProfile?.careers || ""))}</textarea></label>
   <div class="muted" style="font-size:12px">비워 둔 칸은 기본값(포스터 내용)이 보여요.</div>
   <button data-act="saveProfile">프로필 저장</button>
+  <h3>빠른 코멘트 문구</h3>
+  <label class="f" for="st-quick">한 줄에 하나씩 (식단 코멘트 버튼으로 나와요)<textarea id="st-quick" rows="6">${esc(quickList().join("\n"))}</textarea></label>
+  <button data-act="saveQuick">빠른 코멘트 저장</button>
+  <h3>식단 목표 계산 기준</h3>
+  <div class="muted" style="font-size:12px">하루 칼로리 = 기초대사량 × 활동량 × (1 + 조정%). 감량은 기초대사량 아래로 내려가지 않아요. 단백질은 제지방량 1kg당, 지방은 칼로리의 %, 나머지가 탄수화물이에요.</div>
+  <div class="grid3">${[["cutSlow", "감량 완만 %"], ["cutNormal", "감량 보통 %"], ["cutFast", "감량 빠르게 %"], ["bulk", "근육 증가 %"], ["recomp", "리컴프 %"], ["fatPct", "지방 비율 %"], ["pCut", "단백질 감량 g/kg"], ["pBulk", "단백질 증가 g/kg"], ["pKeep", "단백질 유지 g/kg"], ["pRecomp", "단백질 리컴프 g/kg"]].map(([k, t]) => `<label class="f" for="cc-${k}">${t}<input id="cc-${k}" data-k="${k}" class="cc" inputmode="decimal" value="${esc(calcConf()[k])}"></label>`).join("")}</div>
+  <div class="row"><button data-act="saveCalc" style="flex:2">계산 기준 저장</button><button class="ghost" data-act="resetCalc" style="flex:1">기본값</button></div>
   <h3>저장 공간 관리</h3>
   <div class="muted" style="font-size:13px">식사 원본 사진이 저장 공간 대부분을 차지해요. 오래된 원본을 지워도 목록의 작은 사진과 메모, 코멘트는 남아요.</div>
   <div class="row"><select id="st-days" style="width:auto"><option value="90">90일 지난 사진</option><option value="180" selected>180일 지난 사진</option><option value="365">1년 지난 사진</option></select>
@@ -825,8 +1018,8 @@ function confirmDel(b) { if (b.dataset.confirm) return true; b.dataset.confirm =
 document.addEventListener("click", async e => {
   const b = e.target.closest("[data-act]"); if (!b) return;
   const a = b.dataset.act, id = b.dataset.id;
-  if (a === "closeScrim") { if (e.target === b) closeSheet(); return; }
-  if (a === "close") return closeSheet();
+  if (a === "closeScrim") { if (e.target === b) { feed = null; closeSheet(); } return; }
+  if (a === "close") { feed = null; return closeSheet(); }
   if (a === "settings") return settingsSheet();
   if (a === "coachAbout") return coachAboutSheet();
   if (a === "invite") return inviteSheet();
@@ -929,7 +1122,7 @@ document.addEventListener("click", async e => {
         if (memo) await create("coachNotes", mid, { memo });
         closeSheet(); toast(`${name}님 등록 완료 · 아이디 ${loginId}`);
       } else {
-        if (await patch("members", id, base)) { await create("coachNotes", id, { memo }); closeSheet(); toast("저장했어요"); }
+        if (await patch("members", id, base)) { await create("coachNotes", id, { memo }, true); closeSheet(); toast("저장했어요"); }
       }
     } finally { b.disabled = false; }
     return;
@@ -1010,6 +1203,38 @@ document.addEventListener("click", async e => {
     if (confirmDel(b)) { const x = find("meals", id); if (await del("meals", id)) { if (x && x.hasPhoto) { try { await deleteDoc(doc(fs, "photos", id)); } catch (e) {} } closeSheet(); toast("삭제했어요"); } }
     return;
   }
+  if (a === "openFeed") return openFeed();
+  if (a === "closeFeed") { feed = null; return closeSheet(); }
+  if (a === "feedPrev" || a === "feedNext") { feed.i += a === "feedNext" ? 1 : -1; return renderFeed(); }
+  if (a === "qc") { const ta = $("#fmc"); const t = b.dataset.t; ta.value = ta.value.trim() ? ta.value.trim() + "\n" + t : t; b.classList.add("on"); return; }
+  if (a === "wkNav") { ui.wkOff = Math.max(0, (ui.wkOff || 0) + (+b.dataset.k)); saveUi(); return render(); }
+  if (a === "goalCalc") { if (!isCoach()) return; const m = S.members.find(x => x.id === id); return m && goalSheet(m); }
+  if (a === "goalRecalc") { const sh = $("#layer .sheet"); return sh && sh._recalc && sh._recalc(); }
+  if (a === "goalSave") {
+    if (!isCoach()) return;
+    const k = numOrNull($("#gc-kcal").value), c = numOrNull($("#gc-c").value), p = numOrNull($("#gc-p").value), f = numOrNull($("#gc-f").value);
+    if (!k || c == null || p == null || f == null) { $("#gc-msg").textContent = "칼로리와 비율을 모두 입력해 주세요."; return; }
+    if (c + p + f !== 100) { $("#gc-msg").textContent = `비율 합계가 ${c + p + f}%예요. 100%로 맞춰 주세요.`; return; }
+    const mealGoal = { kcal: Math.round(k), ratio: { c, p, f }, carbs: Math.round(k * c / 400), protein: Math.round(k * p / 400), fat: Math.round(k * f / 900), setAt: today() };
+    b.disabled = true;
+    const ok = await patch("members", id, { mealGoal });
+    if (ok) {
+      await create("coachNotes", id, { goalBasis: { goal: $("#gc-goal").value, speed: $("#gc-speed").value, act: $("#gc-act").value, weight: numOrNull($("#gc-w").value), lbm: numOrNull($("#gc-lbm").value), bmr: numOrNull($("#gc-bmr").value), at: today() } }, true);
+      closeSheet(); toast("식단 목표를 저장했어요");
+    }
+    b.disabled = false; return;
+  }
+  if (a === "goalClear") { if (!isCoach() || !confirmDel(b)) return; if (await patch("members", id, { mealGoal: null })) { closeSheet(); toast("식단 목표를 지웠어요"); } return; }
+  if (a === "saveCalc" || a === "resetCalc") {
+    const v = {}; if (a === "saveCalc") { for (const el of document.querySelectorAll(".cc")) { const n = numOrNull(el.value); if (n == null) return toast("숫자로 입력해 주세요."); v[el.dataset.k] = n; } } else Object.assign(v, CALC_DEF);
+    if (await create("coachNotes", "_calc", v)) { toast(a === "saveCalc" ? "계산 기준을 저장했어요" : "기본값으로 되돌렸어요"); if (a === "resetCalc") for (const el of document.querySelectorAll(".cc")) el.value = CALC_DEF[el.dataset.k]; }
+    return;
+  }
+  if (a === "saveQuick") {
+    const items = $("#st-quick").value.split("\n").map(x => x.trim()).filter(Boolean).slice(0, 20);
+    if (await create("coachNotes", "_templates", { items })) toast("빠른 코멘트를 저장했어요");
+    return;
+  }
   if (a === "aiMeal") {
     const x = find("meals", id), msg = $("#ai-msg"), img = $("#meal-big");
     if (!x || !img) return;
@@ -1025,16 +1250,20 @@ document.addEventListener("click", async e => {
   }
   if (a === "saveMealComment" || a === "markMealSeen") {
     const p = { seen: true }; if (a === "saveMealComment") { p.coachComment = $("#fmc").value.trim(); if (pendingNutrition && pendingNutrition.id === id) p.nutrition = pendingNutrition.data; }
-    if (await patch("meals", id, p)) { closeSheet(); toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요"); }
+    if (a === "saveMealComment" && !p.coachComment) { toast("코멘트를 적거나 '확인만'을 눌러 주세요."); return; }
+    if (await patch("meals", id, p)) {
+      toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요");
+      if (feed) { feed.q = feed.q.filter(z => z !== id); renderFeed(); } else closeSheet();
+    }
     return;
   }
   if (a === "newBody") return bodySheet();
   if (a === "editBody") return bodySheet(find("body", id));
   if (a === "saveBody") {
-    const w = numOrNull($("#fb-w").value), smm = numOrNull($("#fb-smm").value), fat = numOrNull($("#fb-fat").value), pbf = numOrNull($("#fb-pbf").value);
+    const w = numOrNull($("#fb-w").value), smm = numOrNull($("#fb-smm").value), fat = numOrNull($("#fb-fat").value), pbf = numOrNull($("#fb-pbf").value), lbm = numOrNull($("#fb-lbm").value), bmr = numOrNull($("#fb-bmr").value);
     if (w == null && smm == null && fat == null) return toast("체중, 골격근량, 체지방량 중 하나는 입력해 주세요.");
     const mid = id ? find("body", id).memberId : curMember();
-    const data = { date: $("#fb-date").value || today(), weight: w, smm, fat, pbf };
+    const data = { date: $("#fb-date").value || today(), weight: w, smm, fat, pbf, lbm, bmr };
     b.disabled = true;
     const ok = id ? await patch("body", id, data) : await create("body", uid(), Object.assign(data, { memberId: mid }));
     b.disabled = false;
