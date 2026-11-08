@@ -907,9 +907,23 @@ async function runImport(file, msg) {
 let pendingProfilePhoto = null;
 let pendingNutrition = null, aiMod = null;
 const r1 = v => Math.round((+v || 0) * 10) / 10;
+const aiKey = () => (S.notes && S.notes._ai && S.notes._ai.key) || "";
+/* direct Gemini API call with the coach's AI Studio key (key lives in coach-only Firestore doc, never in the code) */
+async function geminiDirect(key, name, prompt, b64, mime) {
+  let res;
+  try {
+    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${name}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }) });
+  } catch (e) { throw new Error("Failed to fetch"); }
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`[${res.status}] ${(j.error && (j.error.status + " " + j.error.message)) || res.statusText}`);
+  const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+  return parts.map(x => x.text || "").join("");
+}
 async function analyzeMeal(src, memo, type) {
-  if (!aiMod) aiMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-ai.js");
-  const ai = aiMod.getAI(app, { backend: new aiMod.GoogleAIBackend() });
+  const key = aiKey();
+  let ai = null;
+  if (!key) { if (!aiMod) aiMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-ai.js"); ai = aiMod.getAI(app, { backend: new aiMod.GoogleAIBackend() }); }
   const b64 = src.split(",")[1], mime = (src.match(/^data:([^;]+)/) || [])[1] || "image/jpeg";
   const prompt = `당신은 스포츠 영양 코치입니다. 사진 속 한 끼(${type || "식사"}) 식단을 분석하세요.${memo ? ` 회원 메모: "${memo}"` : ""}
 음식마다 이름(한국어), 추정 무게(g), 탄수화물·단백질·지방(g)을 추정하세요. 조리 과정의 기름·소스·드레싱을 반영한 보정 칼로리(adjKcal)도 추정하세요.
@@ -919,9 +933,10 @@ async function analyzeMeal(src, memo, type) {
   let last;
   for (const name of AI_MODELS) {
     try {
-      const model = aiMod.getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", temperature: 0.2 } });
-      const res = await model.generateContent([prompt, { inlineData: { data: b64, mimeType: mime } }]);
-      const j = JSON.parse(res.response.text().replace(/^```(json)?|```$/g, "").trim());
+      let text;
+      if (key) text = await geminiDirect(key, name, prompt, b64, mime);
+      else { const model = aiMod.getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }); text = (await model.generateContent([prompt, { inlineData: { data: b64, mimeType: mime } }])).response.text(); }
+      const j = JSON.parse(text.replace(/^```(json)?|```$/g, "").trim());
       const items = (j.items || []).map(i => { const c = r1(i.carbs), p = r1(i.protein), f = r1(i.fat), kcal = Math.round(c * 4 + p * 4 + f * 9); return { name: String(i.name || "음식").slice(0, 30), grams: Math.round(+i.grams || 0), carbs: c, protein: p, fat: f, kcal, adjKcal: Math.max(kcal, Math.round(+i.adjKcal || kcal)) }; });
       const total = items.reduce((t, i) => ({ grams: t.grams + i.grams, carbs: r1(t.carbs + i.carbs), protein: r1(t.protein + i.protein), fat: r1(t.fat + i.fat), kcal: t.kcal + i.kcal, adjKcal: t.adjKcal + i.adjKcal }), { grams: 0, carbs: 0, protein: 0, fat: 0, kcal: 0, adjKcal: 0 });
       return { items, total, comment: String(j.comment || "").slice(0, 200), model: name, at: new Date().toISOString() };
@@ -945,6 +960,7 @@ function aiError(e) {
   let t;
   if (/\b429\b|quota|resource.?exhausted|too many requests|rate.?limit/i.test(m)) t = /per.?day|daily|PerDay/i.test(m) ? "오늘 무료 분석 한도를 다 썼어요. 내일 다시 시도해 주세요." : "잠깐 동안 요청이 많았어요. 1분 뒤 다시 눌러 주세요.";
   else if (/\b503\b|overloaded|unavailable/i.test(m)) t = "AI 서버가 지금 붐벼요. 잠시 후 다시 시도해 주세요.";
+  else if (/API_KEY_INVALID|API key not valid|UNAUTHENTICATED|\b401\b/i.test(m)) t = "AI 분석 키가 맞지 않아요. 설정 → AI 분석 키를 다시 확인해 주세요.";
   else if (/api.?not.?enabled|has not been used|PERMISSION_DENIED|\b403\b|firebasevertexai|firebaseml|AI Logic|API key/i.test(m)) t = "Firebase에서 AI Logic(Gemini Developer API) 설정이 아직 안 끝났거나 반영 중이에요. 몇 분 뒤 다시 시도해 주세요.";
   else if (/Failed to fetch|network|Failed to load|dynamically imported/i.test(m)) t = "인터넷 연결을 확인하고 다시 시도해 주세요.";
   else t = "분석하지 못했어요. 잠시 후 다시 시도해 주세요.";
@@ -996,6 +1012,10 @@ function settingsSheet() {
   <h3>빠른 코멘트 문구</h3>
   <label class="f" for="st-quick">한 줄에 하나씩 (식단 코멘트 버튼으로 나와요)<textarea id="st-quick" rows="6">${esc(quickList().join("\n"))}</textarea></label>
   <button data-act="saveQuick">빠른 코멘트 저장</button>
+  <h3>AI 분석 키</h3>
+  <div class="muted" style="font-size:12px">Google AI Studio에서 만든 키를 넣으면 식단 AI 분석에 써요. 키는 코치 계정만 볼 수 있는 곳에 저장되고 회원에게는 안 보여요.${aiKey() ? ` 지금 저장된 키: <span class="num">${esc(aiKey().slice(0, 6))}…${esc(aiKey().slice(-4))}</span>` : ""}</div>
+  <label class="f" for="st-aikey">키 붙여넣기<input id="st-aikey" type="password" autocomplete="off" spellcheck="false" placeholder="AQ. 또는 AIza 로 시작"></label>
+  <div class="row"><button data-act="saveAiKey" style="flex:2">키 저장</button>${aiKey() ? `<button class="ghost" data-act="delAiKey" style="flex:1">키 지우기</button>` : ""}</div>
   <h3>식단 목표 계산 기준</h3>
   <div class="muted" style="font-size:12px">하루 칼로리 = 기초대사량 × 활동량 × (1 + 조정%). 감량은 기초대사량 아래로 내려가지 않아요. 단백질은 제지방량 1kg당, 지방은 칼로리의 %, 나머지가 탄수화물이에요.</div>
   <div class="grid3">${[["cutSlow", "감량 완만 %"], ["cutNormal", "감량 보통 %"], ["cutFast", "감량 빠르게 %"], ["bulk", "근육 증가 %"], ["recomp", "리컴프 %"], ["fatPct", "지방 비율 %"], ["pCut", "단백질 감량 g/kg"], ["pBulk", "단백질 증가 g/kg"], ["pKeep", "단백질 유지 g/kg"], ["pRecomp", "단백질 리컴프 g/kg"]].map(([k, t]) => `<label class="f" for="cc-${k}">${t}<input id="cc-${k}" data-k="${k}" class="cc" inputmode="decimal" value="${esc(calcConf()[k])}"></label>`).join("")}</div>
@@ -1233,6 +1253,13 @@ document.addEventListener("click", async e => {
   if (a === "saveCalc" || a === "resetCalc") {
     const v = {}; if (a === "saveCalc") { for (const el of document.querySelectorAll(".cc")) { const n = numOrNull(el.value); if (n == null) return toast("숫자로 입력해 주세요."); v[el.dataset.k] = n; } } else Object.assign(v, CALC_DEF);
     if (await create("coachNotes", "_calc", v)) { toast(a === "saveCalc" ? "계산 기준을 저장했어요" : "기본값으로 되돌렸어요"); if (a === "resetCalc") for (const el of document.querySelectorAll(".cc")) el.value = CALC_DEF[el.dataset.k]; }
+    return;
+  }
+  if (a === "saveAiKey" || a === "delAiKey") {
+    if (!isCoach()) return;
+    const key = a === "saveAiKey" ? $("#st-aikey").value.trim().replace(/\s+/g, "") : "";
+    if (a === "saveAiKey" && !/^(AQ\.|AIza)[\w.\-]{20,}$/.test(key)) return toast("키 모양이 맞지 않아요. 키 복사 버튼으로 다시 복사해 주세요.");
+    if (await create("coachNotes", "_ai", { key })) { toast(key ? "AI 분석 키를 저장했어요" : "키를 지웠어요"); setTimeout(settingsSheet, 400); }
     return;
   }
   if (a === "saveQuick") {
