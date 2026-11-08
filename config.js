@@ -12,7 +12,7 @@ export const COACH_ID = "choicoach";
 // 아이디를 로그인 이메일로 바꿀 때 쓰는 도메인 (실제 메일 주소 아님)
 export const ID_DOMAIN = "ptnote.app";
 // AI 식단 분석에 쓸 Gemini 모델 (앞에서부터 시도)
-export const AI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"];
+export const AI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"];
 // 앱 이름과 코치 기본 프로필 (설정 > 내 프로필에서 바꾼 값이 있으면 그 값이 우선)
 export const BRAND = "최코치의 PT노트";
 export const COACH_DEFAULT = {

@@ -930,7 +930,7 @@ async function analyzeMeal(src, memo, type) {
 1인분이 아닌 공유 접시라면 사진에서 이 사람이 먹었을 양으로 추정하세요. 음식이 아니면 items를 빈 배열로 두세요.
 아래 JSON만 답하세요:
 {"items":[{"name":"","grams":0,"carbs":0,"protein":0,"fat":0,"adjKcal":0}],"comment":"코치 관점의 한 줄 조언(단백질·채소·조리법 중심)"}`;
-  let last;
+  let last; const errs = [];
   for (const name of AI_MODELS) {
     try {
       let text;
@@ -940,8 +940,9 @@ async function analyzeMeal(src, memo, type) {
       const items = (j.items || []).map(i => { const c = r1(i.carbs), p = r1(i.protein), f = r1(i.fat), kcal = Math.round(c * 4 + p * 4 + f * 9); return { name: String(i.name || "음식").slice(0, 30), grams: Math.round(+i.grams || 0), carbs: c, protein: p, fat: f, kcal, adjKcal: Math.max(kcal, Math.round(+i.adjKcal || kcal)) }; });
       const total = items.reduce((t, i) => ({ grams: t.grams + i.grams, carbs: r1(t.carbs + i.carbs), protein: r1(t.protein + i.protein), fat: r1(t.fat + i.fat), kcal: t.kcal + i.kcal, adjKcal: t.adjKcal + i.adjKcal }), { grams: 0, carbs: 0, protein: 0, fat: 0, kcal: 0, adjKcal: 0 });
       return { items, total, comment: String(j.comment || "").slice(0, 200), model: name, at: new Date().toISOString() };
-    } catch (e) { last = e; e.model = name; const m = String(e && (e.message || e.code) || ""); if (!/not.?found|\b404\b|unsupported|not supported|\b429\b|quota|resource.?exhausted|too many requests|\b503\b|overloaded|unavailable/i.test(m)) throw e; }
+    } catch (e) { last = e; e.model = name; const m = String(e && (e.message || e.code) || ""); errs.push(name + ": " + m.replace(/https?:\/\/\S+/g, "").slice(0, 70)); if (!/not.?found|\b404\b|unsupported|not supported|no longer available|Failed to fetch|\b401\b|\b429\b|quota|resource.?exhausted|too many requests|\b503\b|overloaded|unavailable/i.test(m)) throw e; }
   }
+  if (errs.length > 1) { const e = new Error(errs.join(" / ")); throw e; }
   throw last;
 }
 function nutritionText(r) {
@@ -955,7 +956,7 @@ function nutritionText(r) {
 }
 function aiError(e) {
   const m = String(e && (e.message || e.code) || "");
-  const raw = m.replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 160);
+  const raw = m.replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim().slice(0, 320);
   const tail = raw ? `\n(오류 내용${e && e.model ? ` · ${e.model}` : ""}: ${raw})` : "";
   let t;
   if (/\b429\b|quota|resource.?exhausted|too many requests|rate.?limit/i.test(m)) t = /per.?day|daily|PerDay/i.test(m) ? "오늘 무료 분석 한도를 다 썼어요. 내일 다시 시도해 주세요." : "잠깐 동안 요청이 많았어요. 1분 뒤 다시 눌러 주세요.";
