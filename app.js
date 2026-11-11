@@ -521,7 +521,7 @@ function renderFeed() {
     <div class="row between"><div><b>${esc(m.name)}</b> <span class="muted">${fmtD(x.date)} · ${esc(x.type || "")}</span></div>${streakBadge(sk)}</div>
     <div class="muted" style="font-size:13px">이날 ${st.n}끼${st.analyzed ? ` · 분석한 ${st.analyzed}끼 약 ${Math.round(st.kcal).toLocaleString()}kcal · 단백질 ${Math.round(st.protein)}g` : ""}</div>
     ${dayGoalHtml(m, x.date)}
-    ${shown ? galleryHtml(x, "feed-img") : `<div class="empty">사진 없음</div>`}
+    ${shown ? `<img id="meal-big" class="big-img feed-img" src="${shown}" alt="식사 사진">` : `<div class="empty">사진 없음</div>`}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     ${shown ? `<div class="row between"><span class="muted" style="font-size:13px">칼로리·탄단지 추정</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
     ${quickChips()}
@@ -543,7 +543,7 @@ function mealsView(m, coach) {
     return `<div class="day"><div class="row between"><h3 class="num">${fmtD(d)}</h3><span class="muted num" style="font-size:13px">${(() => { const t = items.filter(i => i.nutrition?.total); if (!t.length) return items.length + "끼"; const k = t.reduce((a, i) => a + (i.nutrition.total.adjKcal || i.nutrition.total.kcal || 0), 0), pr = t.reduce((a, i) => a + (i.nutrition.total.protein || 0), 0); return `${items.length}끼 · 약 ${Math.round(k).toLocaleString()}kcal · 단백질 ${Math.round(pr)}g${t.length < items.length ? " (일부)" : ""}`; })()}</span></div>
     ${dayGoalHtml(m, d)}
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
-      ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">${thumbsOf(x).length > 1 ? `<span class="pcount">📷 ${thumbsOf(x).length}</span>` : ""}` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
+      ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
       ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
       <span class="cap"><b>${esc(x.type)}</b><span>${esc((x.memo || "").slice(0, 12))}</span></span></button>`).join("")}</div></div>`;
   }).join("") : `<div class="empty">${coach ? "회원이 아직 식단을 올리지 않았어요." : "첫 식사 사진을 올려 보세요."}</div>`}`;
@@ -813,25 +813,9 @@ async function makePhotos(file) {
   const img = await loadImg(file);
   return { full: shrink(img, 1000, .72, 190000), thumb: shrink(img, 320, .6, 24000) };
 }
-/* a meal holds up to 3 photos: photos/{id}, photos/{id}_2, photos/{id}_3; thumbs[] on the meal */
-const MAX_PHOTOS = 3;
-const photoIds = x => { const n = x.photoCount || (x.hasPhoto ? 1 : 0); return [x.id, x.id + "_2", x.id + "_3"].slice(0, n); };
-const thumbsOf = x => x.thumbs && x.thumbs.length ? x.thumbs : (x.thumb || x.photo ? [x.thumb || x.photo] : []);
-const fullCache = {};
-async function loadFull(pid) {
-  if (fullCache[pid]) return fullCache[pid];
-  try { const d = await getDoc(doc(fs, "photos", pid)); if (d.exists()) return (fullCache[pid] = d.data().data); } catch (e) {}
-  return null;
-}
-async function loadFulls(x) { const t = thumbsOf(x); return Promise.all(photoIds(x).map(async (pid, i) => (await loadFull(pid)) || t[i])).then(a => a.filter(Boolean)); }
 async function showFull(x, sel) {
   if (!x.hasPhoto) return;
-  const f = await loadFull(x.id); const el = document.querySelector(sel); if (f && el && !el.dataset.i) el.src = f;
-  photoIds(x).slice(1).forEach(loadFull);
-}
-function galleryHtml(x, cls) {
-  const t = thumbsOf(x); if (!t.length) return "";
-  return `<img id="meal-big" class="big-img ${cls || ""}" src="${t[0]}" alt="식사 사진">${t.length > 1 ? `<div class="gal">${t.map((s, i) => `<button type="button" class="${i ? "" : "on"}" data-act="galPick" data-id="${esc(x.id)}" data-i="${i}" aria-label="사진 ${i + 1}"><img src="${s}" alt=""></button>`).join("")}<span class="muted" style="font-size:12px">사진 ${t.length}장</span></div>` : ""}`;
+  try { const d = await getDoc(doc(fs, "photos", x.id)); const el = document.querySelector(sel); if (d.exists() && el) el.src = d.data().data; } catch (e) {}
 }
 let pendingPhoto = null;
 function mealSheet(x) {
@@ -839,7 +823,7 @@ function mealSheet(x) {
   const shown = x.thumb || x.photo;
   if (isCoach()) {
     openSheet(`<div class="row between"><h2>${fmtD(x.date)} ${esc(x.type)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
-    ${galleryHtml(x)}
+    ${shown ? `<img id="meal-big" class="big-img" src="${shown}" alt="식사 사진">` : ""}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     ${shown ? `<div class="row between"><span class="muted" style="font-size:13px">사진으로 칼로리·탄단지를 추정해 코멘트에 채워요</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
     ${quickChips()}
@@ -851,19 +835,17 @@ function mealSheet(x) {
   openSheet(`<h2>${x.id ? "식사 수정" : "식사 올리기"}</h2>
   <div class="grid2"><label class="f" for="fml-date">날짜<input type="date" id="fml-date" value="${esc(x.date || today())}"></label>
   <label class="f" for="fml-type">구분<select id="fml-type">${["아침", "점심", "저녁", "간식"].map(t => `<option ${x.type === t ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
-  <label class="f" for="fml-photo">사진 (한 끼에 최대 ${MAX_PHOTOS}장)<input type="file" id="fml-photo" accept="image/*" multiple></label>
-  ${x.id && thumbsOf(x).length ? `<div class="muted" style="font-size:12px">새 사진을 고르면 이 끼니의 사진이 모두 바뀌어요.</div>` : ""}
-  <div id="fml-prev" class="prev-grid">${thumbsOf(x).map(s => `<img src="${s}" alt="미리보기">`).join("")}</div>
+  <label class="f" for="fml-photo">사진<input type="file" id="fml-photo" accept="image/*"></label>
+  <img id="fml-prev" class="big-img" ${shown ? `src="${shown}"` : "hidden"} alt="미리보기">
   <label class="f" for="fml-memo">메모<input id="fml-memo" value="${esc(x.memo || "")}" placeholder="예: 닭가슴살 샐러드, 소스 반만"></label>
   ${x.coachComment ? `<div><div class="fb-label">코치 코멘트</div><div class="fb">${esc(x.coachComment)}</div></div>` : ""}
   <div class="row">${x.id ? `<button class="ghost" data-act="delMeal" data-id="${esc(x.id)}">삭제</button>` : ""}<button class="ghost" data-act="close" style="flex:1">취소</button><button class="pri" data-act="saveMeal" data-id="${esc(x.id || "")}" style="flex:2">올리기</button></div>`,
     sh => {
+      if (x.id) showFull(x, "#fml-prev");
       sh.querySelector("#fml-photo").addEventListener("change", async e => {
-        let files = [...e.target.files]; if (!files.length) return;
-        if (files.length > MAX_PHOTOS) { toast(`한 끼에 ${MAX_PHOTOS}장까지 올릴 수 있어요. 앞의 ${MAX_PHOTOS}장만 올릴게요.`); files = files.slice(0, MAX_PHOTOS); }
-        const p = sh.querySelector("#fml-prev"); p.innerHTML = `<span class="muted" style="font-size:13px">사진 준비 중…</span>`;
-        try { pendingPhoto = []; for (const f of files) pendingPhoto.push(await makePhotos(f)); p.innerHTML = pendingPhoto.map(q => `<img src="${q.thumb}" alt="미리보기">`).join(""); }
-        catch (err) { pendingPhoto = null; p.innerHTML = ""; toast("사진을 열 수 없어요. 다른 사진으로 시도해 주세요."); }
+        const f = e.target.files[0]; if (!f) return;
+        try { pendingPhoto = await makePhotos(f); const p = sh.querySelector("#fml-prev"); p.src = pendingPhoto.full; p.hidden = false; }
+        catch (err) { toast("사진을 열 수 없어요. 다른 사진으로 시도해 주세요."); }
       });
     });
 }
@@ -927,11 +909,11 @@ let pendingNutrition = null, aiMod = null;
 const r1 = v => Math.round((+v || 0) * 10) / 10;
 const aiKey = () => (S.notes && S.notes._ai && S.notes._ai.key) || "";
 /* direct Gemini API call with the coach's AI Studio key (key lives in coach-only Firestore doc, never in the code) */
-async function geminiDirect(key, name, prompt, imgs) {
+async function geminiDirect(key, name, prompt, b64, mime) {
   let res;
   try {
     res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${name}:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }, ...imgs.map(g => ({ inline_data: { mime_type: g.mime, data: g.b64 } }))] }], generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }) });
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }) });
   } catch (e) { throw new Error("Failed to fetch"); }
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`[${res.status}] ${(j.error && (j.error.status + " " + j.error.message)) || res.statusText}`);
@@ -942,8 +924,8 @@ async function analyzeMeal(src, memo, type) {
   const key = aiKey();
   let ai = null;
   if (!key) { if (!aiMod) aiMod = await import("https://www.gstatic.com/firebasejs/12.16.0/firebase-ai.js"); ai = aiMod.getAI(app, { backend: new aiMod.GoogleAIBackend() }); }
-  const imgs = [].concat(src).map(s => ({ b64: s.split(",")[1], mime: (s.match(/^data:([^;]+)/) || [])[1] || "image/jpeg" }));
-  const prompt = `당신은 스포츠 영양 코치입니다. 사진 속 한 끼(${type || "식사"}) 식단을 분석하세요.${memo ? ` 회원 메모: "${memo}"` : ""}${imgs.length > 1 ? `\n사진 ${imgs.length}장은 모두 같은 한 끼예요(반찬·다른 각도·추가로 먹은 것). 여러 사진에 같은 음식이 보이면 한 번만 세고, 사진들을 합친 한 끼 전체를 분석하세요.` : ""}
+  const b64 = src.split(",")[1], mime = (src.match(/^data:([^;]+)/) || [])[1] || "image/jpeg";
+  const prompt = `당신은 스포츠 영양 코치입니다. 사진 속 한 끼(${type || "식사"}) 식단을 분석하세요.${memo ? ` 회원 메모: "${memo}"` : ""}
 음식마다 이름(한국어), 추정 무게(g), 탄수화물·단백질·지방(g)을 추정하세요. 조리 과정의 기름·소스·드레싱을 반영한 보정 칼로리(adjKcal)도 추정하세요.
 1인분이 아닌 공유 접시라면 사진에서 이 사람이 먹었을 양으로 추정하세요. 음식이 아니면 items를 빈 배열로 두세요.
 아래 JSON만 답하세요:
@@ -952,8 +934,8 @@ async function analyzeMeal(src, memo, type) {
   for (const name of AI_MODELS) {
     try {
       let text;
-      if (key) text = await geminiDirect(key, name, prompt, imgs);
-      else { const model = aiMod.getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }); text = (await model.generateContent([prompt, ...imgs.map(g => ({ inlineData: { data: g.b64, mimeType: g.mime } }))])).response.text(); }
+      if (key) text = await geminiDirect(key, name, prompt, b64, mime);
+      else { const model = aiMod.getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json", temperature: 0.2 } }); text = (await model.generateContent([prompt, { inlineData: { data: b64, mimeType: mime } }])).response.text(); }
       const j = JSON.parse(text.replace(/^```(json)?|```$/g, "").trim());
       const items = (j.items || []).map(i => { const c = r1(i.carbs), p = r1(i.protein), f = r1(i.fat), kcal = Math.round(c * 4 + p * 4 + f * 9); return { name: String(i.name || "음식").slice(0, 30), grams: Math.round(+i.grams || 0), carbs: c, protein: p, fat: f, kcal, adjKcal: Math.max(kcal, Math.round(+i.adjKcal || kcal)) }; });
       const total = items.reduce((t, i) => ({ grams: t.grams + i.grams, carbs: r1(t.carbs + i.carbs), protein: r1(t.protein + i.protein), fat: r1(t.fat + i.fat), kcal: t.kcal + i.kcal, adjKcal: t.adjKcal + i.adjKcal }), { grams: 0, carbs: 0, protein: 0, fat: 0, kcal: 0, adjKcal: 0 });
@@ -1235,18 +1217,16 @@ document.addEventListener("click", async e => {
     const mealId = id || uid();
     b.disabled = true; b.textContent = "올리는 중…";
     let ok = true;
-    if (pendingPhoto && pendingPhoto.length) {
-      const ids = [mealId, mealId + "_2", mealId + "_3"];
-      for (const [i, q] of pendingPhoto.entries()) { if (ok) { ok = await create("photos", ids[i], { memberId: mid, date: data.date, data: q.full }); delete fullCache[ids[i]]; } }
-      if (ok && old) for (const pid of photoIds(old).slice(pendingPhoto.length)) { try { await deleteDoc(doc(fs, "photos", pid)); } catch (e) {} }
-      Object.assign(data, { thumb: pendingPhoto[0].thumb, thumbs: pendingPhoto.map(q => q.thumb), photoCount: pendingPhoto.length, hasPhoto: true, photo: null });
+    if (pendingPhoto) {
+      ok = await create("photos", mealId, { memberId: mid, date: data.date, data: pendingPhoto.full });
+      Object.assign(data, { thumb: pendingPhoto.thumb, hasPhoto: true, photo: null });
     }
     if (ok) ok = id ? await patch("meals", id, data) : await create("meals", mealId, Object.assign(data, { memberId: mid }));
     b.disabled = false; b.textContent = "올리기"; if (ok) { closeSheet(); toast("식사를 올렸어요"); }
     return;
   }
   if (a === "delMeal") {
-    if (confirmDel(b)) { const x = find("meals", id); if (await del("meals", id)) { if (x && x.hasPhoto) { for (const pid of photoIds(x)) { try { await deleteDoc(doc(fs, "photos", pid)); } catch (e) {} } } closeSheet(); toast("삭제했어요"); } }
+    if (confirmDel(b)) { const x = find("meals", id); if (await del("meals", id)) { if (x && x.hasPhoto) { try { await deleteDoc(doc(fs, "photos", id)); } catch (e) {} } closeSheet(); toast("삭제했어요"); } }
     return;
   }
   if (a === "openFeed") return openFeed();
@@ -1288,21 +1268,12 @@ document.addEventListener("click", async e => {
     if (await create("coachNotes", "_templates", { items })) toast("빠른 코멘트를 저장했어요");
     return;
   }
-  if (a === "galPick") {
-    const x = find("meals", id), i = +b.dataset.i, big = $("#meal-big"); if (!x || !big) return;
-    big.dataset.i = i; big.src = thumbsOf(x)[i];
-    b.parentElement.querySelectorAll("button").forEach(z => z.classList.toggle("on", z === b));
-    const f = await loadFull(photoIds(x)[i]); if (f && big.dataset.i == i) big.src = f;
-    return;
-  }
   if (a === "aiMeal") {
     const x = find("meals", id), msg = $("#ai-msg"), img = $("#meal-big");
     if (!x || !img) return;
-    const n = thumbsOf(x).length;
-    b.disabled = true; msg.textContent = `사진${n > 1 ? ` ${n}장을 한 끼로` : "을"} 분석하는 중… (10~30초)`;
+    b.disabled = true; msg.textContent = "사진을 분석하는 중… (10~20초)";
     try {
-      const srcs = n > 1 ? await loadFulls(x) : [img.src];
-      const r = await analyzeMeal(srcs.length ? srcs : [img.src], x.memo, x.type);
+      const r = await analyzeMeal(img.src, x.memo, x.type);
       pendingNutrition = { id, data: r };
       const ta = $("#fmc"), txt = nutritionText(r);
       ta.value = ta.value.trim() ? ta.value.trim() + "\n\n" + txt : txt;
