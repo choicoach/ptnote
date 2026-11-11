@@ -41,7 +41,7 @@ service cloud.firestore {
     match /meals/{id} {
       allow read: if isCoach() || owns(resource.data.memberId);
       allow create: if isCoach() || owns(request.resource.data.memberId);
-      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember() && onlyKeys(['date', 'type', 'memo', 'photo', 'thumb', 'hasPhoto', 'seen', 'updatedAt']));
+      allow update: if isCoach() || (owns(resource.data.memberId) && sameMember() && onlyKeys(['date', 'type', 'memo', 'photo', 'thumb', 'thumbs', 'photoCount', 'hasPhoto', 'seen', 'updatedAt']));
       allow delete: if isCoach() || owns(resource.data.memberId);
     }
     match /photos/{id} {
