@@ -541,12 +541,12 @@ function batchStatus() {
 }
 function batchHtmlInner(mid) {
   if (batch && batch.mid === mid) {
-    if (batch.running) return `<div class="row between"><b>AI 분석 중 <span class="num">${batch.done + batch.fail + 1} / ${batch.total}</span></b><button class="sm ghost" data-act="batchStop">멈추기</button></div><div class="bar"><i style="width:${Math.round((batch.done + batch.fail) / batch.total * 100)}%"></i></div><div class="muted" style="font-size:12px">한 개에 15~20초 걸려요. 끝날 때까지 앱을 켜 두세요.</div>`;
+    if (batch.running) return `<div class="row between"><b>AI 분석 중 <span class="num">${batch.done + batch.fail + 1} / ${batch.total}</span></b><button class="sm ghost" data-act="batchStop">멈추기</button></div><div class="bar"><i style="width:${Math.round((batch.done + batch.fail) / batch.total * 100)}%"></i></div><div class="muted" style="font-size:12px">분석이 끝난 식단은 바로 회원에게 보여요. 한 개에 15~20초 걸리니 앱을 켜 두세요.</div>`;
     if (batch.msg) return `<div class="row between"><span style="font-size:13px">${esc(batch.msg)}</span><button class="sm ghost" data-act="batchClear">닫기</button></div>`;
   }
   const n = batchTodo(mid).length, ready = S.meals.filter(x => x.memberId === mid && !x.coachComment && draftOf(x.id)).length;
   if (!n && !ready) return "";
-  return `<div class="row between"><span style="font-size:13px">${n ? `AI 분석 안 한 식단 <b class="num">${n}개</b>` : ""}${n && ready ? " · " : ""}${ready ? `미리 분석 완료 <b class="num">${ready}개</b> (확인 대기)` : ""}</span>${n ? `<button class="sm pri" data-act="batchAi" data-id="${esc(mid)}">전부 AI 분석</button>` : ""}</div>`;
+  return `<div class="row between"><span style="font-size:13px">${n ? `AI 분석 안 한 식단 <b class="num">${n}개</b>` : ""}${n && ready ? " · " : ""}${ready ? `미리 분석 완료 <b class="num">${ready}개</b> (확인 대기)` : ""}</span>${n ? `<button class="sm pri" data-act="batchAi" data-id="${esc(mid)}">전부 AI 분석</button>` : ""}</div>${n ? `<div class="muted" style="font-size:12px">누르면 차례로 분석해서 결과를 바로 회원에게 보내요. 직접 피드백은 식단을 열어 코멘트 저장으로 언제든 고칠 수 있어요.</div>` : ""}`;
 }
 async function runBatch(mid) {
   const q = batchTodo(mid);
@@ -565,7 +565,8 @@ async function runBatch(mid) {
       if (!src) src = x.thumb || x.photo || null;
       const r = await analyzeMeal(src, x.memo, x.type);
       if (!src) r.fromMemo = true;
-      await create("coachNotes", "aid_" + x.id, { mealId: x.id, memberId: mid, data: r });
+      const cur = find("meals", x.id);
+      if (cur && !cur.coachComment) await patch("meals", x.id, { nutrition: r, coachComment: nutritionText(r), seen: true });
       batch.done++;
     } catch (e) {
       console.error(e); batch.fail++;
@@ -579,7 +580,7 @@ async function runBatch(mid) {
   const left = batch.total - batch.done;
   batch.msg = batch.msg || (dayLimit ? `${batch.done}개 분석 후 오늘 무료 한도를 다 썼어요. 오후 5시 이후 다시 눌러 주세요.`
     : batch.stop ? `${batch.done}개 분석하고 멈췄어요. 다시 누르면 남은 것부터 이어서 해요.`
-    : `${batch.done}개 분석 완료${batch.fail ? ` · ${batch.fail}개 실패 (다시 누르면 재시도)` : ""}. 식단을 열면 추정치가 채워져 있어요.`);
+    : `${batch.done}개 분석해서 회원에게 보냈어요${batch.fail ? ` · ${batch.fail}개 실패 (다시 누르면 재시도)` : ""}.`);
   render();
 }
 function mealsView(m, coach) {
@@ -597,7 +598,7 @@ function mealsView(m, coach) {
     ${dayGoalHtml(m, d)}
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
       ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
-      ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && draftOf(x.id) ? `<span class="dot chip new">AI 준비</span>` : coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
+      ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
       <span class="cap"><b>${esc(x.type)}</b><span>${esc((x.memo || "").slice(0, 12))}</span></span></button>`).join("")}</div></div>`;
   }).join("") : `<div class="empty">${coach ? "회원이 아직 식단을 올리지 않았어요." : "첫 식사 사진을 올려 보세요."}</div>`}`;
 }
