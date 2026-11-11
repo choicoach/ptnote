@@ -516,7 +516,7 @@ function renderFeed() {
   if (!q.length) { openSheet(`<div class="row between"><h2>식단 확인</h2><button class="ghost sm" data-act="closeFeed">닫기</button></div><div class="empty">확인할 식단을 다 봤어요 👏</div>`); return; }
   const x = find("meals", q[feed.i]); const m = S.members.find(z => z.id === x.memberId) || { name: "회원", id: x.memberId };
   const st = dayStats(m.id, x.date), sk = streakOf(m.id), shown = x.thumb || x.photo;
-  pendingNutrition = null;
+  pendingNutrition = draftOf(x.id) ? { id: x.id, data: draftOf(x.id).data } : null;
   openSheet(`<div class="row between"><h2>식단 확인 <span class="muted num" style="font-size:15px">${feed.i + 1} / ${q.length}</span></h2><button class="ghost sm" data-act="closeFeed">닫기</button></div>
     <div class="row between"><div><b>${esc(m.name)}</b> <span class="muted">${fmtD(x.date)} · ${esc(x.type || "")}</span></div>${streakBadge(sk)}</div>
     <div class="muted" style="font-size:13px">이날 ${st.n}끼${st.analyzed ? ` · 분석한 ${st.analyzed}끼 약 ${Math.round(st.kcal).toLocaleString()}kcal · 단백질 ${Math.round(st.protein)}g` : ""}</div>
@@ -525,17 +525,70 @@ function renderFeed() {
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     ${shown || x.memo ? `<div class="row between"><span class="muted" style="font-size:13px">${shown ? "칼로리·탄단지 추정" : "사진 없음 · 메모로 1인분 기준 추정해요"}</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
     ${quickChips()}
-    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="4" placeholder="빠른 코멘트를 누르거나 직접 적어 주세요"></textarea></label>
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="${draftOf(x.id) ? 8 : 4}" placeholder="빠른 코멘트를 누르거나 직접 적어 주세요">${draftOf(x.id) ? esc(nutritionText(draftOf(x.id).data)) : ""}</textarea></label>
     <div class="row"><button class="ghost" data-act="feedPrev" ${feed.i ? "" : "disabled"} aria-label="이전">‹</button><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">저장하고 다음</button><button class="ghost" data-act="feedNext" ${feed.i < q.length - 1 ? "" : "disabled"} aria-label="다음">›</button></div>`);
   showFull(x, "#meal-big");
 }
 
+/* ---------- per-member batch AI (coach) — drafts live in coach-only coachNotes/aid_<mealId> until the coach saves ---------- */
+const draftOf = id => (S.notes && S.notes["aid_" + id]) || null;
+const batchTodo = mid => S.meals.filter(x => x.memberId === mid && !x.nutrition && !x.coachComment && !draftOf(x.id) && (x.hasPhoto || x.thumb || x.photo || (x.memo || "").trim()))
+  .sort((a, b) => (a.date + (a.updatedAt || "")) < (b.date + (b.updatedAt || "")) ? -1 : 1);
+let batch = null;
+function batchStatus() {
+  const el = document.getElementById("batch-st"); if (!el || !batch) return;
+  el.innerHTML = batchHtmlInner(batch.mid);
+}
+function batchHtmlInner(mid) {
+  if (batch && batch.mid === mid) {
+    if (batch.running) return `<div class="row between"><b>AI 분석 중 <span class="num">${batch.done + batch.fail + 1} / ${batch.total}</span></b><button class="sm ghost" data-act="batchStop">멈추기</button></div><div class="bar"><i style="width:${Math.round((batch.done + batch.fail) / batch.total * 100)}%"></i></div><div class="muted" style="font-size:12px">한 개에 15~20초 걸려요. 끝날 때까지 앱을 켜 두세요.</div>`;
+    if (batch.msg) return `<div class="row between"><span style="font-size:13px">${esc(batch.msg)}</span><button class="sm ghost" data-act="batchClear">닫기</button></div>`;
+  }
+  const n = batchTodo(mid).length, ready = S.meals.filter(x => x.memberId === mid && !x.coachComment && draftOf(x.id)).length;
+  if (!n && !ready) return "";
+  return `<div class="row between"><span style="font-size:13px">${n ? `AI 분석 안 한 식단 <b class="num">${n}개</b>` : ""}${n && ready ? " · " : ""}${ready ? `미리 분석 완료 <b class="num">${ready}개</b> (확인 대기)` : ""}</span>${n ? `<button class="sm pri" data-act="batchAi" data-id="${esc(mid)}">전부 AI 분석</button>` : ""}</div>`;
+}
+async function runBatch(mid) {
+  const q = batchTodo(mid);
+  if (!q.length) return toast("분석할 식단이 없어요.");
+  batch = { mid, total: q.length, done: 0, fail: 0, running: true, stop: false, msg: "" };
+  render();
+  let lastStart = 0, dayLimit = false;
+  for (const x of q) {
+    if (batch.stop) break;
+    const wait = 15000 - (Date.now() - lastStart); if (lastStart && wait > 0) await new Promise(r => setTimeout(r, wait));
+    if (batch.stop) break;
+    lastStart = Date.now(); batchStatus();
+    try {
+      let src = null;
+      if (x.hasPhoto) { try { const d = await getDoc(doc(fs, "photos", x.id)); if (d.exists()) src = d.data().data; } catch (e) {} }
+      if (!src) src = x.thumb || x.photo || null;
+      const r = await analyzeMeal(src, x.memo, x.type);
+      if (!src) r.fromMemo = true;
+      await create("coachNotes", "aid_" + x.id, { mealId: x.id, memberId: mid, data: r });
+      batch.done++;
+    } catch (e) {
+      console.error(e); batch.fail++;
+      const m = String(e && (e.message || e.code) || "");
+      if (/per.?day|PerDay|daily/i.test(m)) { dayLimit = true; break; }
+      if (/AI_KEY|API_KEY_INVALID|API key not valid|\b401\b|PERMISSION_DENIED|\b403\b/i.test(m)) { batch.msg = aiError(e).split("\n")[0]; break; }
+    }
+    batchStatus();
+  }
+  batch.running = false;
+  const left = batch.total - batch.done;
+  batch.msg = batch.msg || (dayLimit ? `${batch.done}개 분석 후 오늘 무료 한도를 다 썼어요. 오후 5시 이후 다시 눌러 주세요.`
+    : batch.stop ? `${batch.done}개 분석하고 멈췄어요. 다시 누르면 남은 것부터 이어서 해요.`
+    : `${batch.done}개 분석 완료${batch.fail ? ` · ${batch.fail}개 실패 (다시 누르면 재시도)` : ""}. 식단을 열면 추정치가 채워져 있어요.`);
+  render();
+}
 function mealsView(m, coach) {
   const meals = of("meals", m.id);
   const days = [...new Set(meals.map(x => x.date))].sort().reverse();
   const order = { "아침": 1, "점심": 2, "저녁": 3, "간식": 4 };
   return `<div class="row between"><h2>식단일지 ${streakBadge(streakOf(m.id))}</h2>${!coach ? `<button class="pri sm" data-act="newMeal">+ 식사 올리기</button>` : ""}</div>
   ${goalCard(m, coach)}
+  ${coach ? `<div id="batch-st" class="card stack batch-box">${batchHtmlInner(m.id)}</div>` : ""}
   ${meals.length ? weekReport(m, coach) : ""}
   ${!coach ? `<div class="muted" style="font-size:13px">물 이외에 먹은 것은 모두 사진으로 남겨 주세요. 식사 전에 찍어 두고 저녁에 한 번에 올려도 괜찮아요. 사진을 못 찍었으면 메모에 먹은 음식과 양을 적어 주세요.</div>` : ""}
   ${days.length ? days.map(d => {
@@ -544,7 +597,7 @@ function mealsView(m, coach) {
     ${dayGoalHtml(m, d)}
     <div class="meals">${items.map(x => `<button class="meal" data-act="openMeal" data-id="${esc(x.id)}">
       ${(x.thumb || x.photo) ? `<img src="${x.thumb || x.photo}" alt="${esc(x.type)} 사진" loading="lazy">` : `<div class="noimg">${esc(x.memo || "사진 없음")}</div>`}
-      ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
+      ${x.coachComment ? `<span class="dot chip ok">코멘트</span>` : (coach && draftOf(x.id) ? `<span class="dot chip new">AI 준비</span>` : coach && !x.seen ? `<span class="dot chip new">NEW</span>` : "")}
       <span class="cap"><b>${esc(x.type)}</b><span>${esc((x.memo || "").slice(0, 12))}</span></span></button>`).join("")}</div></div>`;
   }).join("") : `<div class="empty">${coach ? "회원이 아직 식단을 올리지 않았어요." : "첫 식사 사진을 올려 보세요."}</div>`}`;
 }
@@ -822,12 +875,14 @@ function mealSheet(x) {
   x = x || {}; pendingPhoto = null;
   const shown = x.thumb || x.photo;
   if (isCoach()) {
+    pendingNutrition = !x.coachComment && draftOf(x.id) ? { id: x.id, data: draftOf(x.id).data } : null;
     openSheet(`<div class="row between"><h2>${fmtD(x.date)} ${esc(x.type)}</h2><button class="ghost sm" data-act="close">닫기</button></div>
     ${shown ? `<img id="meal-big" class="big-img" src="${shown}" alt="식사 사진">` : ""}
     ${x.memo ? `<div><div class="fb-label">회원 메모</div><div class="fb mine">${esc(x.memo)}</div></div>` : ""}
     ${shown || x.memo ? `<div class="row between"><span class="muted" style="font-size:13px">${shown ? "사진으로 칼로리·탄단지를 추정해 코멘트에 채워요" : "사진 없음 · 메모로 1인분 기준 추정해요"}</span><button class="sm" data-act="aiMeal" data-id="${esc(x.id)}">AI 분석</button></div><div id="ai-msg" class="muted" style="font-size:13px"></div>` : ""}
     ${quickChips()}
-    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="6" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || "")}</textarea></label>
+    ${!x.coachComment && draftOf(x.id) ? `<div class="muted" style="font-size:12px">미리 분석한 AI 추정치를 채웠어요. 확인하고 고친 뒤 저장해 주세요.</div>` : ""}
+    <label class="f" for="fmc">코치 코멘트<textarea id="fmc" rows="${!x.coachComment && draftOf(x.id) ? 9 : 6}" placeholder="단백질 양, 조리법, 대체 메뉴 등">${esc(x.coachComment || (draftOf(x.id) ? nutritionText(draftOf(x.id).data) : ""))}</textarea></label>
     <div class="row"><button class="ghost" data-act="markMealSeen" data-id="${esc(x.id)}" style="flex:1">확인만</button><button class="pri" data-act="saveMealComment" data-id="${esc(x.id)}" style="flex:2">코멘트 저장</button></div>`);
     showFull(x, "#meal-big");
     return;
@@ -1270,6 +1325,9 @@ document.addEventListener("click", async e => {
     if (await create("coachNotes", "_templates", { items })) toast("빠른 코멘트를 저장했어요");
     return;
   }
+  if (a === "batchAi") { if (!isCoach()) return; if (batch && batch.running) return toast("이미 분석 중이에요."); runBatch(id); return; }
+  if (a === "batchStop") { if (batch) batch.stop = true; toast("지금 분석 중인 것까지 하고 멈춰요."); return; }
+  if (a === "batchClear") { batch = null; return render(); }
   if (a === "aiMeal") {
     const x = find("meals", id), msg = $("#ai-msg"), img = $("#meal-big");
     if (!x || (!img && !x.memo)) return;
@@ -1288,6 +1346,7 @@ document.addEventListener("click", async e => {
     const p = { seen: true }; if (a === "saveMealComment") { p.coachComment = $("#fmc").value.trim(); if (pendingNutrition && pendingNutrition.id === id) p.nutrition = pendingNutrition.data; }
     if (a === "saveMealComment" && !p.coachComment) { toast("코멘트를 적거나 '확인만'을 눌러 주세요."); return; }
     if (await patch("meals", id, p)) {
+      if (draftOf(id)) del("coachNotes", "aid_" + id);
       toast(a === "saveMealComment" ? "코멘트를 남겼어요" : "확인했어요");
       if (feed) { feed.q = feed.q.filter(z => z !== id); renderFeed(); } else closeSheet();
     }

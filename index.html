@@ -112,6 +112,9 @@ td.n,th.n{text-align:right;font-family:var(--f-num);font-variant-numeric:tabular
 .meals{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .meal{position:relative;border-radius:10px;overflow:hidden;background:var(--sunk);border:0;padding:0;text-align:left;font-weight:400}
 .meal img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;max-width:100%}
+.batch-box:empty{display:none}
+.batch-box .bar{height:6px;background:var(--sunk);border-radius:4px;overflow:hidden}
+.batch-box .bar i{display:block;height:100%;background:var(--accent);transition:width .4s}
 .meal .noimg{aspect-ratio:1/1;display:grid;place-items:center;color:var(--muted);font-size:13px;padding:8px}
 .meal .cap{position:absolute;left:0;right:0;bottom:0;padding:18px 8px 6px;background:linear-gradient(transparent,rgba(0,0,0,.7));color:#fff;font-size:12px;display:flex;justify-content:space-between;gap:4px}
 .meal .dot{position:absolute;top:6px;right:6px}
